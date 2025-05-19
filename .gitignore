@@ -8,6 +8,9 @@ evaluation/
 */__pycache__/*
 *.dat
 
+Images/*
+__pycache__
+
 #venv
 .venv
 venv/
