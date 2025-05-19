@@ -7,3 +7,7 @@ build/
 evaluation/
 */__pycache__/*
 *.dat
+
+#venv
+.venv
+venv/
