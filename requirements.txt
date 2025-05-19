@@ -3,7 +3,7 @@ visdom
 dominate
 numpy
 scipy
-pillow
+pillow<=9.5.0
 unidecode
 requests
 tqdm
