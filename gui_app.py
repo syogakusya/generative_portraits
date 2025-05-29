@@ -25,7 +25,7 @@ class PortraitApp:
         self.is_capturing = False
         
         # 画像生成キュー
-        self.image_queue = queue.Queue()
+        self.image_queue = queue.Queue(maxsize=10)  # 最大10件まで
         self.processing = False
         self.processing_lock = threading.Lock()  # 処理の重複を防ぐ
         
@@ -177,23 +177,29 @@ class PortraitApp:
         self.root.after(30, self.update_camera)
     
     def capture_image(self):
-        # 処理中の場合は新しい撮影を拒否
-        if self.processing:
-            self.status_label.configure(text="処理中です。しばらくお待ちください...")
-            return
-            
         if self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
+                # キューが満杯かチェック
+                if self.image_queue.full():
+                    self.status_label.configure(text="処理待ちが満杯です。しばらくお待ちください (最大10件)")
+                    return
+                
                 # 画像を保存
                 os.makedirs('Images/in', exist_ok=True)
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 image_path = f'Images/in/captured_{timestamp}.jpg'
                 cv2.imwrite(image_path, frame)
-                self.status_label.configure(text=f"画像を保存しました: {image_path}")
                 
                 # 画像をキューに追加
                 self.image_queue.put(image_path)
+                
+                # キューの状態を表示
+                queue_size = self.image_queue.qsize()
+                if self.processing:
+                    self.status_label.configure(text=f"画像を追加しました (キュー: {queue_size}/10件, 処理中)")
+                else:
+                    self.status_label.configure(text=f"画像を追加しました (キュー: {queue_size}/10件)")
     
     def start_processing_thread(self):
         self.processing_thread = threading.Thread(target=self.process_images, daemon=True)
@@ -205,21 +211,22 @@ class PortraitApp:
                 # ロックを取得して同時処理を防ぐ
                 with self.processing_lock:
                     image_path = self.image_queue.get()
-                    self.generate_video(image_path)
+                    queue_remaining = self.image_queue.qsize()
+                    self.generate_video(image_path, queue_remaining)
                     self.image_queue.task_done()
             time.sleep(0.1)
     
-    def generate_video(self, image_path):
+    def generate_video(self, image_path, queue_remaining=0):
         self.processing = True
         
         try:
-            self.status_label.configure(text=f"モデルロード中...")
+            self.status_label.configure(text=f"モデルロード中... (残り{queue_remaining}件)")
             self.progress['value'] = 10
             
             # モデルをロード（遅延ロード）
             self.setup_model()
             
-            self.status_label.configure(text=f"動画生成中: {image_path}")
+            self.status_label.configure(text=f"動画生成中: {os.path.basename(image_path)} (残り{queue_remaining}件)")
             self.progress['value'] = 30
             
             # GPU メモリをクリア
@@ -268,7 +275,13 @@ class PortraitApp:
                     self.experience_instances.remove(experience_instance)
             
             self.progress['value'] = 100
-            self.status_label.configure(text=f"動画を生成しました: {out_path}")
+            
+            # 次のキューの状態をチェック
+            remaining_queue = self.image_queue.qsize()
+            if remaining_queue > 0:
+                self.status_label.configure(text=f"動画を生成しました: {os.path.basename(out_path)} (次の処理: {remaining_queue}件)")
+            else:
+                self.status_label.configure(text=f"動画を生成しました: {os.path.basename(out_path)} (処理完了)")
             
             # 処理完了後、モデルを解放してメモリを節約
             self.cleanup_model()
