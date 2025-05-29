@@ -8,7 +8,7 @@ from PIL import Image, ImageTk
 class PortraitExperience:
     def __init__(self, root, video_path=None, on_close_callback=None):
         self.root = root
-        self.root.title("ポートレート体験")
+        self.root.title("ポートレート体験 - コントロール")
         self.on_close_callback = on_close_callback
         
         # 設定
@@ -34,17 +34,27 @@ class PortraitExperience:
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.current_frame = 0
         
+        # 動画ウィンドウの作成
+        self.video_window = tk.Toplevel(self.root)
+        self.video_window.title("ポートレート動画")
+        self.is_fullscreen = False
+        
+        # ウィンドウの初期配置
+        self.root.geometry("400x600+100+100")  # メインウィンドウ：幅400、高さ600、位置(100,100)
+        self.video_window.geometry("820x820+550+100")  # 動画ウィンドウ：幅820、高さ820、位置(550,100)
+        
         # GUI要素の作成
         self.create_widgets()
         
         # ウィンドウクローズイベントをバインド
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
+        self.video_window.protocol("WM_DELETE_WINDOW", self.quit)
         
         # カメラプレビューの更新
         self.update_camera()
     
     def create_widgets(self):
-        # メインフレーム
+        # メインウィンドウのUI
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
@@ -52,24 +62,37 @@ class PortraitExperience:
         self.camera_label = ttk.Label(main_frame)
         self.camera_label.grid(row=0, column=0, padx=5, pady=5)
         
-        # 動画プレビュー
-        self.video_label = ttk.Label(main_frame)
-        self.video_label.grid(row=0, column=1, padx=5, pady=5)
-        
         # 距離表示ラベル
         self.distance_label = ttk.Label(main_frame, text="推定距離: -- cm")
-        self.distance_label.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+        self.distance_label.grid(row=1, column=0, padx=5, pady=5)
         
         # 動画選択コンボボックス
         self.video_var = tk.StringVar()
         self.video_combo = ttk.Combobox(main_frame, textvariable=self.video_var)
         self.video_combo['values'] = self.get_video_list()
-        self.video_combo.grid(row=2, column=0, columnspan=2, padx=5, pady=5)
+        self.video_combo.grid(row=2, column=0, padx=5, pady=5)
         self.video_combo.bind('<<ComboboxSelected>>', self.on_video_selected)
+        
+        # フルスクリーン切り替えボタン
+        self.fullscreen_btn = ttk.Button(main_frame, text="フルスクリーン切り替え", command=self.toggle_fullscreen)
+        self.fullscreen_btn.grid(row=3, column=0, padx=5, pady=5)
         
         # 終了ボタン
         self.quit_btn = ttk.Button(main_frame, text="終了", command=self.quit)
-        self.quit_btn.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
+        self.quit_btn.grid(row=4, column=0, padx=5, pady=5)
+        
+        # 動画ウィンドウのUI
+        video_frame = ttk.Frame(self.video_window, padding="10")
+        video_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 動画プレビュー
+        self.video_label = ttk.Label(video_frame)
+        self.video_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # 動画ウィンドウのキーバインド
+        self.video_window.bind('<KeyPress-Escape>', self.exit_fullscreen)
+        self.video_window.bind('<KeyPress-F11>', lambda e: self.toggle_fullscreen())
+        self.video_window.focus_set()  # フォーカスを設定してキーイベントを受け取れるようにする
     
     def get_video_list(self):
         video_dir = 'Images/out'
@@ -126,6 +149,8 @@ class PortraitExperience:
                 
                 # カメラ映像を表示
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # カメラ映像のサイズを調整（コントロールウィンドウに適合）
+                frame = cv2.resize(frame, (350, 260))
                 image = Image.fromarray(frame)
                 photo = ImageTk.PhotoImage(image=image)
                 self.camera_label.configure(image=photo)
@@ -135,7 +160,16 @@ class PortraitExperience:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
                 ret, video_frame = self.cap.read()
                 if ret:
-                    video_frame = cv2.resize(video_frame, (1200, 1200))
+                    # フルスクリーンかどうかでサイズを調整
+                    if self.is_fullscreen:
+                        # フルスクリーンの場合は画面サイズに合わせる
+                        screen_width = self.video_window.winfo_screenwidth()
+                        screen_height = self.video_window.winfo_screenheight()
+                        video_frame = cv2.resize(video_frame, (screen_width, screen_height))
+                    else:
+                        # 通常表示の場合
+                        video_frame = cv2.resize(video_frame, (800, 800))
+                    
                     video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
                     video_image = Image.fromarray(video_frame)
                     video_photo = ImageTk.PhotoImage(image=video_image)
@@ -153,7 +187,30 @@ class PortraitExperience:
         if self.on_close_callback:
             self.on_close_callback(self)
         
+        # 動画ウィンドウも閉じる
+        try:
+            self.video_window.destroy()
+        except:
+            pass
+        
         self.root.destroy()
+    
+    def toggle_fullscreen(self):
+        """フルスクリーンの切り替え"""
+        self.is_fullscreen = not self.is_fullscreen
+        self.video_window.attributes('-fullscreen', self.is_fullscreen)
+        
+        if self.is_fullscreen:
+            self.fullscreen_btn.configure(text="フルスクリーン終了")
+        else:
+            self.fullscreen_btn.configure(text="フルスクリーン切り替え")
+    
+    def exit_fullscreen(self, event=None):
+        """フルスクリーンを終了"""
+        if self.is_fullscreen:
+            self.is_fullscreen = False
+            self.video_window.attributes('-fullscreen', False)
+            self.fullscreen_btn.configure(text="フルスクリーン切り替え")
 
 if __name__ == "__main__":
     root = tk.Tk()

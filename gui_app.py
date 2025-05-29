@@ -7,6 +7,7 @@ import time
 import torch
 import threading
 import queue
+import gc  # ガベージコレクション用
 from collections import OrderedDict
 from options.test_options import TestOptions
 from data.data_loader import CreateDataLoader
@@ -147,17 +148,31 @@ class PortraitApp:
         self.progress['value'] = 0
         
         try:
+            # GPU メモリをクリア
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             # 画像処理
             data = self.dataset.dataset.get_item_from_path(image_path)
             
             # 推論実行
-            visuals = self.model.inference(data)
+            with torch.no_grad():  # 勾配計算を無効化してメモリ節約
+                visuals = self.model.inference(data)
             
             # 出力処理
             os.makedirs('Images/out', exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             out_path = os.path.join('Images/out', f'output_{timestamp}.mp4')
             self.visualizer.make_video(visuals, out_path)
+            
+            # メモリ解放
+            del data
+            del visuals
+            
+            # GPU メモリクリアとガベージコレクション
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
             
             # 生成済み動画リストに追加
             self.generated_videos.append(out_path)
@@ -174,6 +189,10 @@ class PortraitApp:
             self.progress['value'] = 100
             self.status_label.configure(text=f"動画を生成しました: {out_path}")
         except Exception as e:
+            # エラー時もメモリクリア
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
             self.status_label.configure(text=f"エラーが発生しました: {str(e)}")
     
     def start_experience(self):
