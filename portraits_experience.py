@@ -180,8 +180,31 @@ class PortraitExperience:
         self.root.after(30, self.update_camera)
     
     def quit(self):
-        self.cap_cam.release()
-        self.cap.release()
+        # カメラとビデオキャプチャのリソースを解放
+        try:
+            if hasattr(self, 'cap_cam') and self.cap_cam.isOpened():
+                self.cap_cam.release()
+        except:
+            pass
+            
+        try:
+            if hasattr(self, 'cap') and self.cap.isOpened():
+                self.cap.release()
+        except:
+            pass
+        
+        # OpenCVの後処理
+        try:
+            cv2.destroyAllWindows()
+        except:
+            pass
+        
+        # MediaPipeリソースの解放
+        try:
+            if hasattr(self, 'face_detection'):
+                self.face_detection.close()
+        except:
+            pass
         
         # コールバックを呼び出してPortraitAppに終了を通知
         if self.on_close_callback:
@@ -193,7 +216,10 @@ class PortraitExperience:
         except:
             pass
         
-        self.root.destroy()
+        try:
+            self.root.destroy()
+        except:
+            pass
     
     def toggle_fullscreen(self):
         """フルスクリーンの切り替え"""

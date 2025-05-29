@@ -24,18 +24,23 @@ class PortraitApp:
         self.cap = cv2.VideoCapture(0)
         self.is_capturing = False
         
-        # モデル設定
-        self.setup_model()
-        
         # 画像生成キュー
         self.image_queue = queue.Queue()
         self.processing = False
+        self.processing_lock = threading.Lock()  # 処理の重複を防ぐ
         
         # 生成済み動画のリスト
         self.generated_videos = []
         
         # PortraitExperienceのインスタンス参照
         self.experience_instances = []
+        
+        # モデルを初期化時にはロードしない（遅延ロード）
+        self.model = None
+        self.data_loader = None
+        self.dataset = None
+        self.visualizer = None
+        self.opt = None
         
         # GUI要素の作成
         self.create_widgets()
@@ -47,30 +52,75 @@ class PortraitApp:
         self.start_processing_thread()
     
     def setup_model(self):
+        """遅延ロード：実際に必要になったときのみモデルをロード"""
+        if self.model is not None:
+            return  # 既にロード済み
+            
         # モデルの初期化
-        opt = TestOptions().parse(save=False)
-        opt.display_id = 0
-        opt.gpu_ids = [0]
-        opt.nThreads = 1
-        opt.batchSize = 1
-        opt.serial_batches = True
-        opt.no_flip = True
-        opt.in_the_wild = True
-        opt.traverse = True
-        opt.interp_step = 0.05
-        opt.no_moving_avg = True
-        opt.fineSize = 256
+        self.opt = TestOptions().parse(save=False)
+        self.opt.display_id = 0
+        self.opt.gpu_ids = [0]
+        self.opt.nThreads = 1
+        self.opt.batchSize = 1
+        self.opt.serial_batches = True
+        self.opt.no_flip = True
+        self.opt.in_the_wild = True
+        self.opt.traverse = True
+        self.opt.interp_step = 0.05
+        self.opt.no_moving_avg = True
+        self.opt.fineSize = 256
         
-        self.data_loader = CreateDataLoader(opt)
+        self.data_loader = CreateDataLoader(self.opt)
         self.dataset = self.data_loader.load_data()
-        self.visualizer = Visualizer(opt)
+        self.visualizer = Visualizer(self.opt)
         
-        opt.name = 'males_model'
-        self.model = create_model(opt)
+        self.opt.name = 'males_model'
+        self.model = create_model(self.opt)
         self.model.eval()
         
         # GPUメモリ最適化
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        print("モデルのロードが完了しました")
+    
+    def cleanup_model(self):
+        """モデルとリソースを明示的に解放"""
+        try:
+            if self.model is not None:
+                # モデルをCPUに移動してからメモリ解放
+                if hasattr(self.model, 'netG'):
+                    if hasattr(self.model.netG, 'cpu'):
+                        self.model.netG.cpu()
+                if hasattr(self.model, 'netD'):
+                    if hasattr(self.model.netD, 'cpu'):
+                        self.model.netD.cpu()
+                        
+                del self.model
+                self.model = None
+            
+            if self.data_loader is not None:
+                del self.data_loader
+                self.data_loader = None
+            
+            if self.dataset is not None:
+                del self.dataset
+                self.dataset = None
+                
+            if self.visualizer is not None:
+                del self.visualizer
+                self.visualizer = None
+            
+            # GPUメモリの徹底的なクリア
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+            
+            gc.collect()
+            print("モデルとリソースを解放しました")
+            
+        except Exception as e:
+            print(f"モデル解放時にエラーが発生: {e}")
     
     def create_widgets(self):
         # メインフレーム
@@ -100,6 +150,15 @@ class PortraitApp:
         # 体験開始ボタン
         self.experience_btn = ttk.Button(main_frame, text="体験開始", command=self.start_experience)
         self.experience_btn.grid(row=5, column=0, columnspan=2, padx=5, pady=5)
+        
+        # メモリクリアボタン（デバッグ用）
+        self.cleanup_btn = ttk.Button(main_frame, text="メモリクリア", command=self.manual_cleanup)
+        self.cleanup_btn.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
+    
+    def manual_cleanup(self):
+        """手動でメモリクリアを実行"""
+        self.cleanup_model()
+        self.status_label.configure(text="メモリクリアを実行しました")
     
     def update_camera(self):
         if self.cap.isOpened():
@@ -118,6 +177,11 @@ class PortraitApp:
         self.root.after(30, self.update_camera)
     
     def capture_image(self):
+        # 処理中の場合は新しい撮影を拒否
+        if self.processing:
+            self.status_label.configure(text="処理中です。しばらくお待ちください...")
+            return
+            
         if self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
@@ -138,26 +202,39 @@ class PortraitApp:
     def process_images(self):
         while True:
             if not self.image_queue.empty():
-                image_path = self.image_queue.get()
-                self.generate_video(image_path)
-                self.image_queue.task_done()
+                # ロックを取得して同時処理を防ぐ
+                with self.processing_lock:
+                    image_path = self.image_queue.get()
+                    self.generate_video(image_path)
+                    self.image_queue.task_done()
             time.sleep(0.1)
     
     def generate_video(self, image_path):
-        self.status_label.configure(text=f"動画生成中: {image_path}")
-        self.progress['value'] = 0
+        self.processing = True
         
         try:
+            self.status_label.configure(text=f"モデルロード中...")
+            self.progress['value'] = 10
+            
+            # モデルをロード（遅延ロード）
+            self.setup_model()
+            
+            self.status_label.configure(text=f"動画生成中: {image_path}")
+            self.progress['value'] = 30
+            
             # GPU メモリをクリア
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             
             # 画像処理
             data = self.dataset.dataset.get_item_from_path(image_path)
+            self.progress['value'] = 50
             
             # 推論実行
             with torch.no_grad():  # 勾配計算を無効化してメモリ節約
                 visuals = self.model.inference(data)
+            
+            self.progress['value'] = 70
             
             # 出力処理
             os.makedirs('Images/out', exist_ok=True)
@@ -167,12 +244,16 @@ class PortraitApp:
             
             # メモリ解放
             del data
-            del visuals
+            if visuals is not None:
+                del visuals
             
             # GPU メモリクリアとガベージコレクション
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
             gc.collect()
+            
+            self.progress['value'] = 90
             
             # 生成済み動画リストに追加
             self.generated_videos.append(out_path)
@@ -188,12 +269,26 @@ class PortraitApp:
             
             self.progress['value'] = 100
             self.status_label.configure(text=f"動画を生成しました: {out_path}")
+            
+            # 処理完了後、モデルを解放してメモリを節約
+            self.cleanup_model()
+            
         except Exception as e:
             # エラー時もメモリクリア
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
             gc.collect()
             self.status_label.configure(text=f"エラーが発生しました: {str(e)}")
+            print(f"詳細なエラー: {e}")
+            
+            # エラー時もモデルを解放
+            try:
+                self.cleanup_model()
+            except:
+                pass
+        finally:
+            self.processing = False
     
     def start_experience(self):
         selected_indices = self.video_listbox.curselection()
@@ -213,6 +308,12 @@ class PortraitApp:
     def __del__(self):
         if self.cap.isOpened():
             self.cap.release()
+        
+        # 終了時にも念のためリソースを解放
+        try:
+            self.cleanup_model()
+        except:
+            pass
 
 if __name__ == "__main__":
     root = tk.Tk()
