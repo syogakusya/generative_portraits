@@ -6,9 +6,10 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 
 class PortraitExperience:
-    def __init__(self, root, video_path=None):
+    def __init__(self, root, video_path=None, on_close_callback=None):
         self.root = root
         self.root.title("ポートレート体験")
+        self.on_close_callback = on_close_callback
         
         # 設定
         self.REAL_FACE_WIDTH = 16.0  # 顔の実際の幅（cm）
@@ -35,6 +36,9 @@ class PortraitExperience:
         
         # GUI要素の作成
         self.create_widgets()
+        
+        # ウィンドウクローズイベントをバインド
+        self.root.protocol("WM_DELETE_WINDOW", self.quit)
         
         # カメラプレビューの更新
         self.update_camera()
@@ -72,6 +76,20 @@ class PortraitExperience:
         if os.path.exists(video_dir):
             return [f for f in os.listdir(video_dir) if f.endswith('.mp4')]
         return []
+    
+    def refresh_video_list(self):
+        """動画リストを更新する"""
+        current_videos = self.get_video_list()
+        self.video_combo['values'] = current_videos
+        # 現在選択されている動画が削除されていないかチェック
+        current_selection = self.video_var.get()
+        if current_selection and current_selection not in current_videos:
+            # もし現在の選択が無効なら、最初の動画を選択
+            if current_videos:
+                self.video_var.set(current_videos[0])
+                self.on_video_selected(None)
+            else:
+                self.video_var.set("")
     
     def on_video_selected(self, event):
         selected = self.video_var.get()
@@ -130,6 +148,11 @@ class PortraitExperience:
     def quit(self):
         self.cap_cam.release()
         self.cap.release()
+        
+        # コールバックを呼び出してPortraitAppに終了を通知
+        if self.on_close_callback:
+            self.on_close_callback(self)
+        
         self.root.destroy()
 
 if __name__ == "__main__":

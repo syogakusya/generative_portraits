@@ -33,6 +33,9 @@ class PortraitApp:
         # 生成済み動画のリスト
         self.generated_videos = []
         
+        # PortraitExperienceのインスタンス参照
+        self.experience_instances = []
+        
         # GUI要素の作成
         self.create_widgets()
         
@@ -160,6 +163,14 @@ class PortraitApp:
             self.generated_videos.append(out_path)
             self.video_listbox.insert(tk.END, os.path.basename(out_path))
             
+            # PortraitExperienceが開いている場合、動画リストを更新
+            for experience_instance in self.experience_instances[:]:  # コピーしたリストでイテレート
+                try:
+                    experience_instance.refresh_video_list()
+                except tk.TclError:
+                    # ウィンドウが閉じられている場合
+                    self.experience_instances.remove(experience_instance)
+            
             self.progress['value'] = 100
             self.status_label.configure(text=f"動画を生成しました: {out_path}")
         except Exception as e:
@@ -172,7 +183,13 @@ class PortraitApp:
             # 新しいウィンドウで体験を開始
             experience_window = tk.Toplevel(self.root)
             from portraits_experience import PortraitExperience
-            PortraitExperience(experience_window, selected_video)
+            experience_instance = PortraitExperience(experience_window, selected_video, self.on_experience_closed)
+            self.experience_instances.append(experience_instance)
+    
+    def on_experience_closed(self, experience_instance):
+        """PortraitExperienceウィンドウが閉じられたときのコールバック"""
+        if experience_instance in self.experience_instances:
+            self.experience_instances.remove(experience_instance)
     
     def __del__(self):
         if self.cap.isOpened():
