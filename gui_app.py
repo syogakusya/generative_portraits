@@ -74,6 +74,12 @@ class PortraitApp:
         self.dataset = self.data_loader.load_data()
         self.visualizer = Visualizer(self.opt)
         
+        # 現在選択されている背景色を適用
+        selected = self.background_var.get()
+        color_map = {"黒": 0, "グレー": 128, "白": 255}
+        background_color = color_map.get(selected, 0)
+        self.dataset.dataset.set_background_color(background_color)
+        
         self.opt.name = 'males_model'
         self.model = create_model(self.opt)
         self.model.eval()
@@ -151,9 +157,20 @@ class PortraitApp:
         self.experience_btn = ttk.Button(main_frame, text="体験開始", command=self.start_experience)
         self.experience_btn.grid(row=5, column=0, columnspan=2, padx=5, pady=5)
         
+        # 背景色選択
+        background_frame = ttk.Frame(main_frame)
+        background_frame.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Label(background_frame, text="背景色:").grid(row=0, column=0, padx=5)
+        self.background_var = tk.StringVar(value="黒")
+        self.background_combo = ttk.Combobox(background_frame, textvariable=self.background_var, 
+                                           values=["黒", "グレー", "白"], state="readonly")
+        self.background_combo.grid(row=0, column=1, padx=5)
+        self.background_combo.bind('<<ComboboxSelected>>', self.on_background_changed)
+        
         # メモリクリアボタン（デバッグ用）
         self.cleanup_btn = ttk.Button(main_frame, text="メモリクリア", command=self.manual_cleanup)
-        self.cleanup_btn.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
+        self.cleanup_btn.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
     
     def manual_cleanup(self):
         """手動でメモリクリアを実行"""
@@ -317,6 +334,20 @@ class PortraitApp:
         """PortraitExperienceウィンドウが閉じられたときのコールバック"""
         if experience_instance in self.experience_instances:
             self.experience_instances.remove(experience_instance)
+    
+    def on_background_changed(self, event):
+        """背景色が変更されたときの処理"""
+        selected = self.background_var.get()
+        print(f"背景色が変更されました: {selected}")
+        
+        # 背景色の値を設定
+        color_map = {"黒": 0, "グレー": 128, "白": 255}
+        background_color = color_map.get(selected, 0)
+        
+        # データセットが既にロードされている場合は背景色を更新
+        if hasattr(self, 'dataset') and self.dataset is not None:
+            self.dataset.dataset.set_background_color(background_color)
+            print(f"背景色を {selected}({background_color}) に設定しました")
     
     def __del__(self):
         if self.cap.isOpened():

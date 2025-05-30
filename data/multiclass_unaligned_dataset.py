@@ -23,6 +23,7 @@ class MulticlassUnalignedDataset(BaseDataset):
         self.class_A = -1
         self.class_B = -1
         self.get_samples = False
+        self.background_color = 0  # デフォルトで黒色
         if not self.opt.isTrain:
             self.in_the_wild = opt.in_the_wild
         else:
@@ -113,10 +114,16 @@ class MulticlassUnalignedDataset(BaseDataset):
 
         return i
 
-    def mask_image(self, img, parsings):
+    def set_background_color(self, color):
+        """背景色を設定する (0=黒, 128=グレー, 255=白)"""
+        self.background_color = color
+
+    def mask_image(self, img, parsings, background_color=None):
+        if background_color is None:
+            background_color = self.background_color
         labels_to_mask = [0,14,15,16,18]
         for idx in labels_to_mask:
-            img[parsings == idx] = 128
+            img[parsings == idx] = background_color
 
         return img
 

@@ -12,10 +12,10 @@ class PortraitExperience:
         self.on_close_callback = on_close_callback
         
         # 設定
-        self.REAL_FACE_WIDTH = 16.0  # 顔の実際の幅（cm）
+        self.REAL_FACE_WIDTH = 19.0  # 顔の実際の幅（cm）
         self.FOCAL_LENGTH = 600      # カメラの焦点距離（px）
-        self.DIST_MAX = 100  # この距離で動画の最初
-        self.DIST_MIN = 60.0  # この距離で動画の最後
+        self.DIST_MAX = 200  # この距離で動画の最初
+        self.DIST_MIN = 50.0  # この距離で動画の最後
         
         # MediaPipeのセットアップ
         self.mp_face_detection = mp.solutions.face_detection
@@ -37,6 +37,7 @@ class PortraitExperience:
         # 動画ウィンドウの作成
         self.video_window = tk.Toplevel(self.root)
         self.video_window.title("ポートレート動画")
+        self.video_window.configure(bg='black')  # 動画ウィンドウの背景を黒に設定
         self.is_fullscreen = False
         
         # ウィンドウの初期配置
@@ -82,11 +83,15 @@ class PortraitExperience:
         self.quit_btn.grid(row=4, column=0, padx=5, pady=5)
         
         # 動画ウィンドウのUI
-        video_frame = ttk.Frame(self.video_window, padding="10")
+        video_frame = tk.Frame(self.video_window, bg='black', padx=10, pady=10)
         video_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
+        # video_frameの格子設定
+        video_frame.grid_rowconfigure(0, weight=1)
+        video_frame.grid_columnconfigure(0, weight=1)
+
         # 動画プレビュー
-        self.video_label = ttk.Label(video_frame)
+        self.video_label = tk.Label(video_frame, bg='black')
         self.video_label.grid(row=0, column=0, padx=5, pady=5)
         
         # 動画ウィンドウのキーバインド
