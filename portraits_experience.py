@@ -6,6 +6,10 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import math
 
+## todo
+# MINMAX距離をスライダーで変更できるように
+# mediapipeのモデルを更新
+
 class PortraitExperience:
     def __init__(self, root, video_path=None, on_close_callback=None):
         self.root = root
