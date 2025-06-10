@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+from tkinter import filedialog
 import cv2
 from PIL import Image, ImageTk
 import os
@@ -42,6 +43,9 @@ class PortraitApp:
         self.visualizer = None
         self.opt = None
         
+        # 既存動画のリストを読み込む
+        self.load_existing_videos()
+        
         # GUI要素の作成
         self.create_widgets()
         
@@ -51,6 +55,14 @@ class PortraitApp:
         # 画像処理スレッドの開始
         self.start_processing_thread()
     
+    def load_existing_videos(self):
+        """既存の動画ファイルを読み込む"""
+        video_dir = 'Images/out'
+        if os.path.exists(video_dir):
+            for file in os.listdir(video_dir):
+                if file.endswith('.mp4'):
+                    self.generated_videos.append(os.path.join(video_dir, file))
+        
     def setup_model(self):
         """遅延ロード：実際に必要になったときのみモデルをロード"""
         if self.model is not None:
@@ -137,13 +149,37 @@ class PortraitApp:
         self.camera_label = ttk.Label(main_frame)
         self.camera_label.grid(row=0, column=0, columnspan=2, padx=5, pady=5)
         
+        # ボタンフレーム
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+        
         # 撮影ボタン
-        self.capture_btn = ttk.Button(main_frame, text="撮影", command=self.capture_image)
-        self.capture_btn.grid(row=1, column=0, padx=5, pady=5)
+        self.capture_btn = ttk.Button(button_frame, text="撮影", command=self.capture_image)
+        self.capture_btn.grid(row=0, column=0, padx=5)
+        
+        # 画像選択ボタン
+        self.select_image_btn = ttk.Button(button_frame, text="画像を選択", command=self.select_image)
+        self.select_image_btn.grid(row=0, column=1, padx=5)
         
         # 生成済み動画リスト
-        self.video_listbox = tk.Listbox(main_frame, height=5)
-        self.video_listbox.grid(row=2, column=0, columnspan=2, padx=5, pady=5)
+        list_frame = ttk.Frame(main_frame)
+        list_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # リストボックスのラベル
+        self.list_label = ttk.Label(list_frame, text="生成済み動画：")
+        self.list_label.grid(row=0, column=0, sticky=tk.W)
+        
+        # スクロールバー付きリストボックス
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        self.video_listbox = tk.Listbox(list_frame, height=5, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self.video_listbox.yview)
+        
+        self.video_listbox.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scrollbar.grid(row=1, column=1, sticky=(tk.N, tk.S))
+        
+        # 既存の動画を表示
+        for video_path in self.generated_videos:
+            self.video_listbox.insert(tk.END, os.path.basename(video_path))
         
         # 進捗バー
         self.progress = ttk.Progressbar(main_frame, length=200, mode='determinate')
@@ -217,6 +253,43 @@ class PortraitApp:
                     self.status_label.configure(text=f"画像を追加しました (キュー: {queue_size}/10件, 処理中)")
                 else:
                     self.status_label.configure(text=f"画像を追加しました (キュー: {queue_size}/10件)")
+    
+    def select_image(self):
+        """既存の画像ファイルを選択して処理"""
+        file_path = filedialog.askopenfilename(
+            title="画像を選択",
+            filetypes=[
+                ("画像ファイル", "*.jpg *.jpeg *.png *.bmp"),
+                ("すべてのファイル", "*.*")
+            ]
+        )
+        
+        if file_path:
+            # キューが満杯かチェック
+            if self.image_queue.full():
+                self.status_label.configure(text="処理待ちが満杯です。しばらくお待ちください (最大10件)")
+                return
+            
+            # 選択された画像をImagesフォルダにコピー
+            os.makedirs('Images/in', exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = os.path.basename(file_path)
+            name, ext = os.path.splitext(filename)
+            new_path = f'Images/in/{name}_{timestamp}{ext}'
+            
+            # 画像をコピー
+            image = cv2.imread(file_path)
+            cv2.imwrite(new_path, image)
+            
+            # 画像をキューに追加
+            self.image_queue.put(new_path)
+            
+            # キューの状態を表示
+            queue_size = self.image_queue.qsize()
+            if self.processing:
+                self.status_label.configure(text=f"画像を追加しました: {filename} (キュー: {queue_size}/10件, 処理中)")
+            else:
+                self.status_label.configure(text=f"画像を追加しました: {filename} (キュー: {queue_size}/10件)")
     
     def start_processing_thread(self):
         self.processing_thread = threading.Thread(target=self.process_images, daemon=True)
