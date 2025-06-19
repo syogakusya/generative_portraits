@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
 import math
+from tkinter import colorchooser
 
 ## todo
 # MINMAX距離をスライダーで変更できるように
@@ -18,7 +19,7 @@ class PortraitExperience:
         
         # 設定
         self.REAL_FACE_WIDTH = 16.0  # 顔の実際の幅（cm）
-        self.FOCAL_LENGTH = 800.0   # カメラの焦点距離（px）
+        self.FOCAL_LENGTH = 800.0    # カメラの焦点距離（px）
         self.DIST_MAX = 170.0  # この距離で動画の最初
         self.DIST_MIN = 120.0  # この距離で動画の最後
         
@@ -26,27 +27,12 @@ class PortraitExperience:
         self.debug_mode = False
         self.manual_distance = 100.0  # デバッグモードでの手動距離
         
-        # 顔検出結果を保存する変数
-        self.latest_detection_result = None
-        
-        # MediaPipe Tasks APIのセットアップ
-        BaseOptions = mp.tasks.BaseOptions
-        FaceDetector = mp.tasks.vision.FaceDetector
-        FaceDetectorOptions = mp.tasks.vision.FaceDetectorOptions
-        VisionRunningMode = mp.tasks.vision.RunningMode
-        
-        # コールバック関数を定義
-        def result_callback(result: mp.tasks.vision.FaceDetectorResult, output_image: mp.Image, timestamp_ms: int):
-            self.latest_detection_result = result
-        
-        # 顔検出の設定（デフォルトモデルを使用）
-        options = FaceDetectorOptions(
-            running_mode=VisionRunningMode.LIVE_STREAM,
-            result_callback=result_callback,
+        # MediaPipeのセットアップ
+        self.mp_face_detection = mp.solutions.face_detection
+        self.face_detection = self.mp_face_detection.FaceDetection(
+            model_selection=0, 
             min_detection_confidence=0.3
         )
-        
-        self.detector = FaceDetector.create_from_options(options)
         
         # カメラの設定
         self.cap_cam = cv2.VideoCapture(1)
@@ -71,6 +57,9 @@ class PortraitExperience:
         # ウィンドウの初期配置
         self.root.geometry("400x700+200+200")  # メインウィンドウ：幅400、高さ700、位置(200,200)
         self.video_window.geometry("820x820+550+200")  # 動画ウィンドウ：幅820、高さ820、位置(550,200)
+        
+        # 背景色の初期値を設定（create_widgetsの前に定義）
+        self.bg_color = 'black'
         
         # GUI要素の作成
         self.create_widgets()
@@ -171,20 +160,24 @@ class PortraitExperience:
         self.quit_btn = ttk.Button(main_frame, text="終了", command=self.quit)
         self.quit_btn.grid(row=8, column=0, padx=5, pady=5)
         
+        # 背景色選択ボタン
+        self.bgcolor_btn = ttk.Button(main_frame, text="背景色を選択", command=self.choose_bg_color)
+        self.bgcolor_btn.grid(row=9, column=0, padx=5, pady=5)
+        
         # キャリブレーションボタン
         self.calibrate_btn = ttk.Button(main_frame, text="カメラキャリブレーション", command=self.open_calibration_window)
-        self.calibrate_btn.grid(row=9, column=0, padx=5, pady=5)
+        self.calibrate_btn.grid(row=10, column=0, padx=5, pady=5)
         
         # 動画ウィンドウのUI
-        video_frame = tk.Frame(self.video_window, bg='black', padx=10, pady=10)
-        video_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.video_frame = tk.Frame(self.video_window, bg=self.bg_color, padx=10, pady=10)
+        self.video_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # video_frameの格子設定
-        video_frame.grid_rowconfigure(0, weight=1)
-        video_frame.grid_columnconfigure(0, weight=1)
+        self.video_frame.grid_rowconfigure(0, weight=1)
+        self.video_frame.grid_columnconfigure(0, weight=1)
 
         # 動画プレビュー
-        self.video_label = tk.Label(video_frame, bg='black')
+        self.video_label = tk.Label(self.video_frame, bg=self.bg_color)
         self.video_label.grid(row=0, column=0, padx=5, pady=5)
         
         # 動画ウィンドウのキーバインド
@@ -228,34 +221,24 @@ class PortraitExperience:
             if ret:
                 # デバッグモードでない場合のみ顔検出を実行
                 if not self.debug_mode:
-                    # MediaPipe Tasks API用にフレームを変換
+                    # 顔検出用にRGB変換
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                    results = self.face_detection.process(frame_rgb)
                     
-                    # 顔検出を非同期で実行（タイムスタンプを指定）
-                    timestamp_ms = int(cv2.getTickCount() / cv2.getTickFrequency() * 1000)
-                    self.detector.detect_async(mp_image, timestamp_ms)
-                    
-                    # 最新の検出結果を使用
-                    if self.latest_detection_result and self.latest_detection_result.detections:
-                        # 最初の顔の境界ボックスを取得
-                        detection = self.latest_detection_result.detections[0]
-                        bbox = detection.bounding_box
-                        
-                        # 顔の幅をピクセル単位で計算
-                        ih, iw, _ = frame.shape
-                        face_width_pixel = bbox.width * iw
-                        
-                        if face_width_pixel > 0:
-                            distance_cm = (self.REAL_FACE_WIDTH * self.FOCAL_LENGTH) / face_width_pixel
-                            self.distance_label.configure(text=f"推定距離: {distance_cm:.2f} cm")
+                    if results.detections:
+                        for detection in results.detections:
+                            bboxC = detection.location_data.relative_bounding_box
+                            ih, iw, _ = frame.shape
+                            face_width_pixel = bboxC.width * iw
                             
-                            # 動画の再生位置を距離に応じて決定
-                            clamped_distance = max(min(distance_cm, self.DIST_MAX), self.DIST_MIN)
-                            normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
-                            self.current_frame = int(normalized * (self.total_frames - 1))
-                    else:
-                        self.distance_label.configure(text="推定距離: 顔が検出されていません")
+                            if face_width_pixel > 0:
+                                distance_cm = (self.REAL_FACE_WIDTH * self.FOCAL_LENGTH) / face_width_pixel
+                                self.distance_label.configure(text=f"推定距離: {distance_cm:.2f} cm")
+                                
+                                # 動画の再生位置を距離に応じて決定
+                                clamped_distance = max(min(distance_cm, self.DIST_MAX), self.DIST_MIN)
+                                normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
+                                self.current_frame = int(normalized * (self.total_frames - 1))
                 else:
                     # デバッグモードの場合は手動距離を使用
                     distance_cm = self.manual_distance
@@ -310,16 +293,11 @@ class PortraitExperience:
                     video_image = Image.fromarray(video_frame)
                     
                     if self.is_fullscreen:
-                        # フルスクリーン時は黒背景の画像を作成して、その中央に動画を配置
                         screen_width = self.video_window.winfo_screenwidth()
                         screen_height = self.video_window.winfo_screenheight()
-                        background = Image.new('RGB', (screen_width, screen_height), 'black')
-                        
-                        # 動画を中央に配置するための座標を計算
+                        background = Image.new('RGB', (screen_width, screen_height), self.bg_color)
                         x = (screen_width - video_image.width) // 2
                         y = (screen_height - video_image.height) // 2
-                        
-                        # 動画を黒背景の中央に配置
                         background.paste(video_image, (x, y))
                         video_photo = ImageTk.PhotoImage(image=background)
                     else:
@@ -354,8 +332,8 @@ class PortraitExperience:
         
         # MediaPipeリソースの解放
         try:
-            if hasattr(self, 'detector'):
-                self.detector.close()
+            if hasattr(self, 'face_detection'):
+                self.face_detection.close()
         except:
             pass
         
@@ -446,6 +424,14 @@ class PortraitExperience:
     def open_calibration_window(self):
         # キャリブレーションウィンドウを開く処理を実装
         pass
+
+    def choose_bg_color(self):
+        color_code = colorchooser.askcolor(title="背景色を選択")
+        if color_code and color_code[1]:
+            self.bg_color = color_code[1]
+            self.video_window.configure(bg=self.bg_color)
+            self.video_frame.configure(bg=self.bg_color)
+            self.video_label.configure(bg=self.bg_color)
 
 if __name__ == "__main__":
     root = tk.Tk()
