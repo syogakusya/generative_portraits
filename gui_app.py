@@ -82,6 +82,16 @@ class PortraitApp:
         self.opt.no_moving_avg = True
         self.opt.fineSize = 256
         
+        # モデル名を先に設定（重要！）
+        self.opt.name = 'females_model'
+        print(f"モデル名を設定しました: {self.opt.name}")
+        
+        # データセットも女性用に設定（females フォルダが存在しない場合はデフォルトを使用）
+        # self.opt.dataroot = './datasets/females/'
+        
+        # 女性用の画像リストファイルを指定
+        self.opt.image_path_file = 'females_image_list.txt'
+        
         self.data_loader = CreateDataLoader(self.opt)
         self.dataset = self.data_loader.load_data()
         self.visualizer = Visualizer(self.opt)
@@ -92,9 +102,11 @@ class PortraitApp:
         background_color = color_map.get(selected, 0)
         self.dataset.dataset.set_background_color(background_color)
         
-        self.opt.name = 'males_model'
         self.model = create_model(self.opt)
         self.model.eval()
+        
+        print(f"使用中のモデル: {self.opt.name}")
+        print(f"checkpoints/{self.opt.name} からモデルをロードしました")
         
         # GPUメモリ最適化
         if torch.cuda.is_available():
