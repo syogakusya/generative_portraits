@@ -6,6 +6,9 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import math
 from tkinter import colorchooser
+import serial
+import threading
+import time
 
 ## todo
 # MINMAX距離をスライダーで変更できるように
@@ -26,6 +29,17 @@ class PortraitExperience:
         # デバッグモード
         self.debug_mode = False
         self.manual_distance = 100.0  # デバッグモードでの手動距離
+        
+        # Arduino関連の設定
+        self.use_arduino = False
+        self.arduino_serial = None
+        self.arduino_distance = 0.0
+        self.arduino_thread = None
+        self.arduino_running = False
+        
+        # 顔認識状態
+        self.face_detected = False
+        self.last_face_time = 0.0
         
         # MediaPipeのセットアップ
         self.mp_face_detection = mp.solutions.face_detection
@@ -55,7 +69,7 @@ class PortraitExperience:
         self.selected_display = 0  # デフォルトはメインディスプレイ
         
         # ウィンドウの初期配置
-        self.root.geometry("400x700+200+200")  # メインウィンドウ：幅400、高さ700、位置(200,200)
+        self.root.geometry("400x750+200+200")  # メインウィンドウ：幅400、高さ750、位置(200,200)
         self.video_window.geometry("820x820+550+200")  # 動画ウィンドウ：幅820、高さ820、位置(550,200)
         
         # 背景色の初期値を設定（create_widgetsの前に定義）
@@ -112,40 +126,65 @@ class PortraitExperience:
         self.distance_label = ttk.Label(main_frame, text="推定距離: -- cm")
         self.distance_label.grid(row=1, column=0, padx=5, pady=5)
         
+        # 顔認識状態表示ラベル
+        self.face_status_label = ttk.Label(main_frame, text="顔認識: 未検出")
+        self.face_status_label.grid(row=2, column=0, padx=5, pady=5)
+        
         # デバッグモード切り替えチェックボックス
         self.debug_var = tk.BooleanVar()
         self.debug_checkbox = ttk.Checkbutton(main_frame, text="デバッグモード", 
                                              variable=self.debug_var, 
                                              command=self.toggle_debug_mode)
-        self.debug_checkbox.grid(row=2, column=0, padx=5, pady=5)
+        self.debug_checkbox.grid(row=3, column=0, padx=5, pady=5)
         
         # 距離調整スライダー（デバッグモード用）
         self.distance_var = tk.DoubleVar(value=100.0)
         self.distance_slider = ttk.Scale(main_frame, from_=self.DIST_MIN, to=self.DIST_MAX,
                                        variable=self.distance_var, orient=tk.HORIZONTAL,
                                        command=self.on_distance_changed)
-        self.distance_slider.grid(row=3, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        self.distance_slider.grid(row=4, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         self.distance_slider.grid_remove()  # 初期状態では非表示
         
         # スライダー値表示ラベル
         self.slider_label = ttk.Label(main_frame, text="手動距離: 100.0 cm")
-        self.slider_label.grid(row=4, column=0, padx=5, pady=5)
+        self.slider_label.grid(row=5, column=0, padx=5, pady=5)
         self.slider_label.grid_remove()  # 初期状態では非表示
+        
+        # Arduino設定フレーム
+        arduino_frame = ttk.LabelFrame(main_frame, text="Arduino設定", padding="5")
+        arduino_frame.grid(row=6, column=0, padx=5, pady=10, sticky=(tk.W, tk.E))
+        
+        # Arduino使用チェックボックス
+        self.arduino_var = tk.BooleanVar()
+        self.arduino_checkbox = ttk.Checkbutton(arduino_frame, text="Arduino超音波センサーを使用", 
+                                               variable=self.arduino_var, 
+                                               command=self.toggle_arduino)
+        self.arduino_checkbox.grid(row=0, column=0, columnspan=2, padx=5, pady=5)
+        
+        # COMポート選択
+        ttk.Label(arduino_frame, text="COMポート:").grid(row=1, column=0, padx=5, pady=5)
+        self.com_var = tk.StringVar(value="COM3")
+        self.com_entry = ttk.Entry(arduino_frame, textvariable=self.com_var, width=10)
+        self.com_entry.grid(row=1, column=1, padx=5, pady=5)
+        
+        # Arduino距離表示
+        self.arduino_distance_label = ttk.Label(arduino_frame, text="Arduino距離: -- cm")
+        self.arduino_distance_label.grid(row=2, column=0, columnspan=2, padx=5, pady=5)
         
         # 動画選択コンボボックス
         self.video_var = tk.StringVar()
         self.video_combo = ttk.Combobox(main_frame, textvariable=self.video_var)
         self.video_combo['values'] = self.get_video_list()
-        self.video_combo.grid(row=5, column=0, padx=5, pady=5)
+        self.video_combo.grid(row=7, column=0, padx=5, pady=5)
         self.video_combo.bind('<<ComboboxSelected>>', self.on_video_selected)
         
         # フルスクリーン切り替えボタン
         self.fullscreen_btn = ttk.Button(main_frame, text="フルスクリーン切り替え", command=self.toggle_fullscreen)
-        self.fullscreen_btn.grid(row=6, column=0, padx=5, pady=5)
+        self.fullscreen_btn.grid(row=8, column=0, padx=5, pady=5)
         
         # ディスプレイ選択コンボボックス
         display_frame = ttk.Frame(main_frame)
-        display_frame.grid(row=7, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        display_frame.grid(row=9, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         
         ttk.Label(display_frame, text="ディスプレイ:").grid(row=0, column=0, padx=(0, 5))
         self.display_var = tk.StringVar()
@@ -156,17 +195,17 @@ class PortraitExperience:
         self.display_combo.grid(row=0, column=1)
         self.display_combo.bind('<<ComboboxSelected>>', self.on_display_selected)
         
-        # 終了ボタン
-        self.quit_btn = ttk.Button(main_frame, text="終了", command=self.quit)
-        self.quit_btn.grid(row=8, column=0, padx=5, pady=5)
-        
         # 背景色選択ボタン
         self.bgcolor_btn = ttk.Button(main_frame, text="背景色を選択", command=self.choose_bg_color)
-        self.bgcolor_btn.grid(row=9, column=0, padx=5, pady=5)
+        self.bgcolor_btn.grid(row=10, column=0, padx=5, pady=5)
         
         # キャリブレーションボタン
         self.calibrate_btn = ttk.Button(main_frame, text="カメラキャリブレーション", command=self.open_calibration_window)
-        self.calibrate_btn.grid(row=10, column=0, padx=5, pady=5)
+        self.calibrate_btn.grid(row=11, column=0, padx=5, pady=5)
+        
+        # 終了ボタン
+        self.quit_btn = ttk.Button(main_frame, text="終了", command=self.quit)
+        self.quit_btn.grid(row=12, column=0, padx=5, pady=5)
         
         # 動画ウィンドウのUI
         self.video_frame = tk.Frame(self.video_window, bg=self.bg_color, padx=10, pady=10)
@@ -219,30 +258,48 @@ class PortraitExperience:
         if self.cap_cam.isOpened():
             ret, frame = self.cap_cam.read()
             if ret:
+                # 顔検出用にRGB変換
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = self.face_detection.process(frame_rgb)
+                
+                # 顔認識状態をリセット
+                self.face_detected = False
+                
                 # デバッグモードでない場合のみ顔検出を実行
                 if not self.debug_mode:
-                    # 顔検出用にRGB変換
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    results = self.face_detection.process(frame_rgb)
-                    
                     if results.detections:
+                        self.face_detected = True
+                        self.last_face_time = time.time()
+                        
                         for detection in results.detections:
                             bboxC = detection.location_data.relative_bounding_box
                             ih, iw, _ = frame.shape
                             face_width_pixel = bboxC.width * iw
                             
                             if face_width_pixel > 0:
-                                distance_cm = (self.REAL_FACE_WIDTH * self.FOCAL_LENGTH) / face_width_pixel
-                                self.distance_label.configure(text=f"推定距離: {distance_cm:.2f} cm")
+                                # Arduino使用時は顔認識中のみArduino距離を使用、それ以外は顔サイズから計算
+                                if self.use_arduino and self.arduino_distance > 0:
+                                    distance_cm = self.arduino_distance
+                                    self.distance_label.configure(text=f"Arduino距離: {distance_cm:.2f} cm")
+                                else:
+                                    distance_cm = (self.REAL_FACE_WIDTH * self.FOCAL_LENGTH) / face_width_pixel
+                                    self.distance_label.configure(text=f"推定距離: {distance_cm:.2f} cm")
                                 
                                 # 動画の再生位置を距離に応じて決定
                                 clamped_distance = max(min(distance_cm, self.DIST_MAX), self.DIST_MIN)
                                 normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
                                 self.current_frame = int(normalized * (self.total_frames - 1))
+                    
+                    # 顔認識状態の更新
+                    if self.face_detected:
+                        self.face_status_label.configure(text="顔認識: 検出中")
+                    else:
+                        self.face_status_label.configure(text="顔認識: 未検出")
                 else:
                     # デバッグモードの場合は手動距離を使用
                     distance_cm = self.manual_distance
                     self.distance_label.configure(text=f"手動距離: {distance_cm:.2f} cm")
+                    self.face_detected = True  # デバッグモードでは常に顔ありとして扱う
                     
                     # 動画の再生位置を手動距離に応じて決定
                     clamped_distance = max(min(distance_cm, self.DIST_MAX), self.DIST_MIN)
@@ -258,59 +315,78 @@ class PortraitExperience:
                 self.camera_label.configure(image=photo)
                 self.camera_label.image = photo
                 
-                # 動画フレームを表示
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-                ret, video_frame = self.cap.read()
-                if ret:
-                    # フルスクリーンかどうかでサイズを調整
-                    if self.is_fullscreen:
-                        # フルスクリーンの場合は画面サイズに合わせつつアスペクト比を保持
-                        screen_width = self.video_window.winfo_screenwidth()
-                        screen_height = self.video_window.winfo_screenheight()
-                        
-                        # 元の動画のアスペクト比を計算
-                        h, w = video_frame.shape[:2]
-                        aspect_ratio = w / h
-                        
-                        # スクリーンのアスペクト比を計算
-                        screen_aspect_ratio = screen_width / screen_height
-                        
-                        if screen_aspect_ratio > aspect_ratio:
-                            # スクリーンの方が横長の場合、高さに合わせる
-                            new_height = screen_height
-                            new_width = int(screen_height * aspect_ratio)
-                        else:
-                            # スクリーンの方が縦長の場合、幅に合わせる
-                            new_width = screen_width
-                            new_height = int(screen_width / aspect_ratio)
-                        
-                        video_frame = cv2.resize(video_frame, (new_width, new_height))
-                    else:
-                        # 通常表示の場合
-                        video_frame = cv2.resize(video_frame, (800, 800))
-                    
-                    video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
-                    video_image = Image.fromarray(video_frame)
-                    
-                    if self.is_fullscreen:
-                        screen_width = self.video_window.winfo_screenwidth()
-                        screen_height = self.video_window.winfo_screenheight()
-                        background = Image.new('RGB', (screen_width, screen_height), self.bg_color)
-                        x = (screen_width - video_image.width) // 2
-                        y = (screen_height - video_image.height) // 2
-                        background.paste(video_image, (x, y))
-                        video_photo = ImageTk.PhotoImage(image=background)
-                    else:
-                        # 通常表示の場合は直接表示
-                        video_photo = ImageTk.PhotoImage(image=video_image)
-                    
-                    self.video_label.configure(image=video_photo)
-                    self.video_label.image = video_photo
+                # 動画表示の処理
+                self.update_video_display()
         
         # 30ms後に再度更新
         self.root.after(30, self.update_camera)
     
+    def update_video_display(self):
+        """動画表示の更新"""
+        # 顔が検出されている場合のみ動画を表示
+        if self.face_detected:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+            ret, video_frame = self.cap.read()
+            if ret:
+                # フルスクリーンかどうかでサイズを調整
+                if self.is_fullscreen:
+                    # フルスクリーンの場合は画面サイズに合わせつつアスペクト比を保持
+                    screen_width = self.video_window.winfo_screenwidth()
+                    screen_height = self.video_window.winfo_screenheight()
+                    
+                    # 元の動画のアスペクト比を計算
+                    h, w = video_frame.shape[:2]
+                    aspect_ratio = w / h
+                    
+                    # スクリーンのアスペクト比を計算
+                    screen_aspect_ratio = screen_width / screen_height
+                    
+                    if screen_aspect_ratio > aspect_ratio:
+                        # スクリーンの方が横長の場合、高さに合わせる
+                        new_height = screen_height
+                        new_width = int(screen_height * aspect_ratio)
+                    else:
+                        # スクリーンの方が縦長の場合、幅に合わせる
+                        new_width = screen_width
+                        new_height = int(screen_width / aspect_ratio)
+                    
+                    video_frame = cv2.resize(video_frame, (new_width, new_height))
+                    video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
+                    video_image = Image.fromarray(video_frame)
+                    
+                    screen_width = self.video_window.winfo_screenwidth()
+                    screen_height = self.video_window.winfo_screenheight()
+                    background = Image.new('RGB', (screen_width, screen_height), self.bg_color)
+                    x = (screen_width - video_image.width) // 2
+                    y = (screen_height - video_image.height) // 2
+                    background.paste(video_image, (x, y))
+                    video_photo = ImageTk.PhotoImage(image=background)
+                else:
+                    # 通常表示の場合
+                    video_frame = cv2.resize(video_frame, (800, 800))
+                    video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
+                    video_image = Image.fromarray(video_frame)
+                    video_photo = ImageTk.PhotoImage(image=video_image)
+                
+                self.video_label.configure(image=video_photo)
+                self.video_label.image = video_photo
+        else:
+            # 顔が検出されていない場合は背景色のみ表示
+            if self.is_fullscreen:
+                screen_width = self.video_window.winfo_screenwidth()
+                screen_height = self.video_window.winfo_screenheight()
+                background = Image.new('RGB', (screen_width, screen_height), self.bg_color)
+            else:
+                background = Image.new('RGB', (800, 800), self.bg_color)
+            
+            video_photo = ImageTk.PhotoImage(image=background)
+            self.video_label.configure(image=video_photo)
+            self.video_label.image = video_photo
+    
     def quit(self):
+        # Arduino接続を終了
+        self.disconnect_arduino()
+        
         # カメラとビデオキャプチャのリソースを解放
         try:
             if hasattr(self, 'cap_cam') and self.cap_cam.isOpened():
@@ -432,6 +508,60 @@ class PortraitExperience:
             self.video_window.configure(bg=self.bg_color)
             self.video_frame.configure(bg=self.bg_color)
             self.video_label.configure(bg=self.bg_color)
+
+    def toggle_arduino(self):
+        """Arduino使用の切り替え"""
+        self.use_arduino = self.arduino_var.get()
+        if self.use_arduino:
+            self.connect_arduino()
+        else:
+            self.disconnect_arduino()
+    
+    def connect_arduino(self):
+        """Arduinoとの接続を開始"""
+        try:
+            com_port = self.com_var.get()
+            self.arduino_serial = serial.Serial(com_port, 9600, timeout=1)
+            time.sleep(2)  # Arduino初期化待機
+            
+            # Arduino通信スレッドを開始
+            self.arduino_running = True
+            self.arduino_thread = threading.Thread(target=self.arduino_communication_thread)
+            self.arduino_thread.daemon = True
+            self.arduino_thread.start()
+            
+            print(f"Arduino接続成功: {com_port}")
+        except Exception as e:
+            print(f"Arduino接続エラー: {e}")
+            self.arduino_var.set(False)
+            self.use_arduino = False
+    
+    def disconnect_arduino(self):
+        """Arduinoとの接続を終了"""
+        self.arduino_running = False
+        if self.arduino_thread:
+            self.arduino_thread.join(timeout=1)
+        if self.arduino_serial:
+            self.arduino_serial.close()
+            self.arduino_serial = None
+        print("Arduino接続を終了")
+    
+    def arduino_communication_thread(self):
+        """Arduino通信スレッド"""
+        while self.arduino_running and self.arduino_serial:
+            try:
+                if self.arduino_serial.in_waiting > 0:
+                    line = self.arduino_serial.readline().decode('utf-8').strip()
+                    if line:
+                        # 距離データを取得（例：「Distance: 25.4」形式を想定）
+                        if line.startswith('Distance:'):
+                            distance_str = line.split(':')[1].strip()
+                            self.arduino_distance = float(distance_str)
+                            self.arduino_distance_label.configure(text=f"Arduino距離: {self.arduino_distance:.1f} cm")
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"Arduino通信エラー: {e}")
+                break
 
 if __name__ == "__main__":
     root = tk.Tk()
