@@ -82,15 +82,17 @@ class PortraitApp:
         self.opt.no_moving_avg = True
         self.opt.fineSize = 256
         
-        # モデル名を先に設定（重要！）
-        self.opt.name = 'females_model'
+        # 選択された性別に応じてモデル名と画像リストファイルを設定
+        selected_gender = self.gender_var.get()
+        if selected_gender == "女性":
+            self.opt.name = 'females_model'
+            self.opt.image_path_file = 'females_image_list.txt'
+        else:  # 男性
+            self.opt.name = 'males_model'
+            self.opt.image_path_file = 'males_image_list.txt'
+            
         print(f"モデル名を設定しました: {self.opt.name}")
-        
-        # データセットも女性用に設定（females フォルダが存在しない場合はデフォルトを使用）
-        # self.opt.dataroot = './datasets/females/'
-        
-        # 女性用の画像リストファイルを指定
-        self.opt.image_path_file = 'females_image_list.txt'
+        print(f"画像リストファイル: {self.opt.image_path_file}")
         
         self.data_loader = CreateDataLoader(self.opt)
         self.dataset = self.data_loader.load_data()
@@ -140,6 +142,11 @@ class PortraitApp:
             if self.visualizer is not None:
                 del self.visualizer
                 self.visualizer = None
+            
+            # optも初期化（モデル切り替え時のために）
+            if self.opt is not None:
+                del self.opt
+                self.opt = None
             
             # GPUメモリの徹底的なクリア
             if torch.cuda.is_available():
@@ -201,13 +208,24 @@ class PortraitApp:
         self.status_label = ttk.Label(main_frame, text="準備完了")
         self.status_label.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
         
+        # 性別選択フレーム
+        gender_frame = ttk.Frame(main_frame)
+        gender_frame.grid(row=5, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Label(gender_frame, text="性別:").grid(row=0, column=0, padx=5)
+        self.gender_var = tk.StringVar(value="女性")
+        self.gender_combo = ttk.Combobox(gender_frame, textvariable=self.gender_var, 
+                                        values=["女性", "男性"], state="readonly")
+        self.gender_combo.grid(row=0, column=1, padx=5)
+        self.gender_combo.bind('<<ComboboxSelected>>', self.on_gender_changed)
+        
         # 体験開始ボタン
         self.experience_btn = ttk.Button(main_frame, text="体験開始", command=self.start_experience)
-        self.experience_btn.grid(row=5, column=0, columnspan=2, padx=5, pady=5)
+        self.experience_btn.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
         
         # 背景色選択
         background_frame = ttk.Frame(main_frame)
-        background_frame.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
+        background_frame.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
         
         ttk.Label(background_frame, text="背景色:").grid(row=0, column=0, padx=5)
         self.background_var = tk.StringVar(value="黒")
@@ -218,7 +236,7 @@ class PortraitApp:
         
         # メモリクリアボタン（デバッグ用）
         self.cleanup_btn = ttk.Button(main_frame, text="メモリクリア", command=self.manual_cleanup)
-        self.cleanup_btn.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
+        self.cleanup_btn.grid(row=8, column=0, columnspan=2, padx=5, pady=5)
     
     def manual_cleanup(self):
         """手動でメモリクリアを実行"""
@@ -433,6 +451,29 @@ class PortraitApp:
         if hasattr(self, 'dataset') and self.dataset is not None:
             self.dataset.dataset.set_background_color(background_color)
             print(f"背景色を {selected}({background_color}) に設定しました")
+    
+    def on_gender_changed(self, event):
+        """性別が変更されたときの処理"""
+        selected = self.gender_var.get()
+        print(f"性別が変更されました: {selected}")
+        
+        # 既存のモデルをクリーンアップ
+        if self.model is not None:
+            print("既存のモデルをクリーンアップしています...")
+            self.cleanup_model()
+        
+        # 新しい設定でモデルをロード
+        print(f"新しいモデル({selected})をロード中...")
+        self.status_label.configure(text=f"モデル切り替え中: {selected}")
+        
+        # setup_modelが性別に応じて適切なモデルを設定するので、直接呼び出す
+        try:
+            self.setup_model()
+            self.status_label.configure(text=f"モデル切り替え完了: {selected}")
+            print(f"{selected}用のモデルロードが完了しました")
+        except Exception as e:
+            self.status_label.configure(text=f"モデル切り替えエラー: {str(e)}")
+            print(f"モデル切り替えエラー: {e}")
     
     def __del__(self):
         if self.cap.isOpened():
