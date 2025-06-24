@@ -64,6 +64,49 @@ class PortraitApp:
             for file in os.listdir(video_dir):
                 if file.endswith('.mp4'):
                     self.generated_videos.append(os.path.join(video_dir, file))
+    
+    def load_existing_images(self):
+        """既存の画像まとめファイルと画像フレームディレクトリを読み込む"""
+        image_dir = 'Images/out'
+        if os.path.exists(image_dir):
+            for item in os.listdir(image_dir):
+                item_path = os.path.join(image_dir, item)
+                
+                # 画像まとめファイル
+                if item.startswith('combined_') and item.endswith('.png'):
+                    self.generated_files.append(("画像まとめ", item_path))
+                    self.video_listbox.insert(tk.END, f"[画像まとめ] {item}")
+                
+                # 画像フレームディレクトリ
+                elif item.startswith('frames_') and os.path.isdir(item_path):
+                    self.generated_files.append(("画像フレーム", item_path))
+                    self.video_listbox.insert(tk.END, f"[画像フレーム] {item}")
+    
+    def open_selected_file(self):
+        """選択されたファイルを開く"""
+        selected_indices = self.video_listbox.curselection()
+        if selected_indices:
+            file_type, file_path = self.generated_files[selected_indices[0]]
+            try:
+                if os.name == 'nt':  # Windows
+                    os.startfile(file_path)
+                elif os.name == 'posix':  # macOS and Linux
+                    import subprocess
+                    subprocess.call(['open', file_path] if os.uname().sysname == 'Darwin' else ['xdg-open', file_path])
+            except Exception as e:
+                self.status_label.configure(text=f"ファイルを開けませんでした: {e}")
+    
+    def open_output_folder(self):
+        """出力フォルダを開く"""
+        output_dir = 'Images/out'
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(output_dir)
+            elif os.name == 'posix':  # macOS and Linux
+                import subprocess
+                subprocess.call(['open', output_dir] if os.uname().sysname == 'Darwin' else ['xdg-open', output_dir])
+        except Exception as e:
+            self.status_label.configure(text=f"フォルダを開けませんでした: {e}")
         
     def setup_model(self):
         """遅延ロード：実際に必要になったときのみモデルをロード"""
@@ -182,25 +225,44 @@ class PortraitApp:
         self.select_image_btn = ttk.Button(button_frame, text="画像を選択", command=self.select_image)
         self.select_image_btn.grid(row=0, column=1, padx=5)
         
-        # 生成済み動画リスト
+        # 生成済みファイルリスト
         list_frame = ttk.Frame(main_frame)
         list_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # リストボックスのラベル
-        self.list_label = ttk.Label(list_frame, text="生成済み動画：")
+        self.list_label = ttk.Label(list_frame, text="生成済みファイル：")
         self.list_label.grid(row=0, column=0, sticky=tk.W)
+        
+        # ボタンフレーム
+        list_button_frame = ttk.Frame(list_frame)
+        list_button_frame.grid(row=0, column=1, padx=5, sticky=tk.E)
+        
+        # ファイルを開くボタン
+        self.open_file_btn = ttk.Button(list_button_frame, text="ファイルを開く", command=self.open_selected_file)
+        self.open_file_btn.grid(row=0, column=0, padx=2)
+        
+        # フォルダを開くボタン
+        self.open_folder_btn = ttk.Button(list_button_frame, text="フォルダを開く", command=self.open_output_folder)
+        self.open_folder_btn.grid(row=0, column=1, padx=2)
         
         # スクロールバー付きリストボックス
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         self.video_listbox = tk.Listbox(list_frame, height=5, yscrollcommand=scrollbar.set)
         scrollbar.config(command=self.video_listbox.yview)
         
-        self.video_listbox.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        scrollbar.grid(row=1, column=1, sticky=(tk.N, tk.S))
+        self.video_listbox.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scrollbar.grid(row=1, column=2, sticky=(tk.N, tk.S))
+        
+        # 生成済みファイルリスト（動画と画像）
+        self.generated_files = []
         
         # 既存の動画を表示
         for video_path in self.generated_videos:
-            self.video_listbox.insert(tk.END, os.path.basename(video_path))
+            self.generated_files.append(("動画", video_path))
+            self.video_listbox.insert(tk.END, f"[動画] {os.path.basename(video_path)}")
+        
+        # 既存の画像まとめファイルも読み込む
+        self.load_existing_images()
         
         # 進捗バー
         self.progress = ttk.Progressbar(main_frame, length=200, mode='determinate')
@@ -236,9 +298,19 @@ class PortraitApp:
         self.background_combo.grid(row=0, column=1, padx=5)
         self.background_combo.bind('<<ComboboxSelected>>', self.on_background_changed)
         
+        # 出力形式選択
+        output_frame = ttk.Frame(main_frame)
+        output_frame.grid(row=8, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Label(output_frame, text="出力形式:").grid(row=0, column=0, padx=5)
+        self.output_format_var = tk.StringVar(value="動画のみ")
+        self.output_format_combo = ttk.Combobox(output_frame, textvariable=self.output_format_var, 
+                                              values=["動画のみ", "画像フレームのみ", "画像まとめのみ", "動画+画像フレーム", "動画+画像まとめ", "すべて"], state="readonly")
+        self.output_format_combo.grid(row=0, column=1, padx=5)
+        
         # カメラ設定フレーム
         camera_frame = ttk.Frame(main_frame)
-        camera_frame.grid(row=8, column=0, columnspan=2, padx=5, pady=5)
+        camera_frame.grid(row=9, column=0, columnspan=2, padx=5, pady=5)
         
         ttk.Label(camera_frame, text="GUI用カメラID:").grid(row=0, column=0, padx=5)
         self.gui_camera_var = tk.StringVar(value="0")
@@ -257,7 +329,7 @@ class PortraitApp:
         
         # メモリクリアボタン（デバッグ用）
         self.cleanup_btn = ttk.Button(main_frame, text="メモリクリア", command=self.manual_cleanup)
-        self.cleanup_btn.grid(row=9, column=0, columnspan=2, padx=5, pady=5)
+        self.cleanup_btn.grid(row=10, column=0, columnspan=2, padx=5, pady=5)
     
     def pause_camera(self):
         """カメラを一時停止（Portrait Experience起動時）"""
@@ -430,7 +502,9 @@ class PortraitApp:
             # モデルをロード（遅延ロード）
             self.setup_model()
             
-            self.status_label.configure(text=f"動画生成中: {os.path.basename(image_path)} (残り{queue_remaining}件)")
+            # 選択された出力形式を取得
+            output_format = self.output_format_var.get()
+            self.status_label.configure(text=f"生成中: {os.path.basename(image_path)} (残り{queue_remaining}件)")
             self.progress['value'] = 30
             
             # GPU メモリをクリア
@@ -450,8 +524,38 @@ class PortraitApp:
             # 出力処理
             os.makedirs('Images/out', exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            out_path = os.path.join('Images/out', f'output_{timestamp}.mp4')
-            self.visualizer.make_video(visuals, out_path)
+            generated_files = []
+            
+            # 動画生成
+            if output_format in ["動画のみ", "動画+画像フレーム", "動画+画像まとめ", "すべて"]:
+                video_path = os.path.join('Images/out', f'output_{timestamp}.mp4')
+                self.visualizer.make_video(visuals, video_path)
+                generated_files.append(("動画", video_path))
+                
+                # 生成済みファイルリストに追加
+                self.generated_videos.append(video_path)
+                self.generated_files.append(("動画", video_path))
+                self.video_listbox.insert(tk.END, f"[動画] {os.path.basename(video_path)}")
+            
+            # 画像フレーム生成
+            if output_format in ["画像フレームのみ", "動画+画像フレーム", "すべて"]:
+                frame_dir = os.path.join('Images/out', f'frames_{timestamp}')
+                self.visualizer.save_frame_images(visuals, frame_dir)
+                generated_files.append(("画像フレーム", frame_dir))
+                
+                # 生成済みファイルリストに追加
+                self.generated_files.append(("画像フレーム", frame_dir))
+                self.video_listbox.insert(tk.END, f"[画像フレーム] frames_{timestamp}")
+            
+            # 画像まとめ生成
+            if output_format in ["画像まとめのみ", "動画+画像まとめ", "すべて"]:
+                image_path_output = os.path.join('Images/out', f'combined_{timestamp}.png')
+                self.visualizer.save_row_image(visuals, image_path_output, traverse=True)
+                generated_files.append(("画像まとめ", image_path_output))
+                
+                # 生成済みファイルリストに追加
+                self.generated_files.append(("画像まとめ", image_path_output))
+                self.video_listbox.insert(tk.END, f"[画像まとめ] {os.path.basename(image_path_output)}")
             
             # メモリ解放
             del data
@@ -466,10 +570,6 @@ class PortraitApp:
             
             self.progress['value'] = 90
             
-            # 生成済み動画リストに追加
-            self.generated_videos.append(out_path)
-            self.video_listbox.insert(tk.END, os.path.basename(out_path))
-            
             # PortraitExperienceが開いている場合、動画リストを更新
             for experience_instance in self.experience_instances[:]:  # コピーしたリストでイテレート
                 try:
@@ -480,12 +580,20 @@ class PortraitApp:
             
             self.progress['value'] = 100
             
-            # 次のキューの状態をチェック
+            # ステータス表示
             remaining_queue = self.image_queue.qsize()
-            if remaining_queue > 0:
-                self.status_label.configure(text=f"動画を生成しました: {os.path.basename(out_path)} (次の処理: {remaining_queue}件)")
+            if len(generated_files) > 1:
+                file_names = [os.path.basename(path) for _, path in generated_files]
+                if remaining_queue > 0:
+                    self.status_label.configure(text=f"生成完了: {', '.join(file_names)} (次の処理: {remaining_queue}件)")
+                else:
+                    self.status_label.configure(text=f"生成完了: {', '.join(file_names)} (処理完了)")
             else:
-                self.status_label.configure(text=f"動画を生成しました: {os.path.basename(out_path)} (処理完了)")
+                file_type, file_path = generated_files[0]
+                if remaining_queue > 0:
+                    self.status_label.configure(text=f"{file_type}を生成しました: {os.path.basename(file_path)} (次の処理: {remaining_queue}件)")
+                else:
+                    self.status_label.configure(text=f"{file_type}を生成しました: {os.path.basename(file_path)} (処理完了)")
             
             # 処理完了後、モデルを解放してメモリを節約
             self.cleanup_model()
@@ -510,16 +618,22 @@ class PortraitApp:
     def start_experience(self):
         selected_indices = self.video_listbox.curselection()
         if selected_indices:
-            selected_video = self.generated_videos[selected_indices[0]]
+            file_type, file_path = self.generated_files[selected_indices[0]]
             
-            # カメラを一時的に解放してPortrait Experienceでの競合を避ける
-            self.pause_camera()
-            
-            # 新しいウィンドウで体験を開始
-            experience_window = tk.Toplevel(self.root)
-            from portraits_experience import PortraitExperience
-            experience_instance = PortraitExperience(experience_window, selected_video, self.on_experience_closed)
-            self.experience_instances.append(experience_instance)
+            # 動画ファイルのみ体験可能
+            if file_type == "動画":
+                # カメラを一時的に解放してPortrait Experienceでの競合を避ける
+                self.pause_camera()
+                
+                # 新しいウィンドウで体験を開始
+                experience_window = tk.Toplevel(self.root)
+                from portraits_experience import PortraitExperience
+                experience_instance = PortraitExperience(experience_window, file_path, self.on_experience_closed)
+                self.experience_instances.append(experience_instance)
+            elif file_type == "画像フレーム":
+                self.status_label.configure(text="体験機能は動画ファイルのみに対応しています。画像フレームは「ファイルを開く」で確認できます")
+            else:
+                self.status_label.configure(text="体験機能は動画ファイルのみに対応しています")
     
     def on_experience_closed(self, experience_instance):
         """PortraitExperienceウィンドウが閉じられたときのコールバック"""

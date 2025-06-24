@@ -161,6 +161,23 @@ table td {width: %dpx; height: %dpx; padding: 4px; outline: 4px solid black}
 
         writer.release()
 
+    def save_frame_images(self, visuals, output_dir):
+        visual = visuals[0]
+        orig_img = visual['orig_img']
+        
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        out_classes = len(visual) - 1
+        
+        util.save_image(orig_img, os.path.join(output_dir, 'frame_000_original.png'))
+        
+        for cls in range(out_classes):
+            next_im = visual['tex_trans_to_class_' + str(cls)]
+            frame_filename = f'frame_{cls+1:03d}.png'
+            frame_path = os.path.join(output_dir, frame_filename)
+            util.save_image(next_im, frame_path)
+
     # save image to the disk
     def save_images_deploy(self, visuals, image_path):
         for i in range(len(visuals)):
