@@ -22,8 +22,10 @@ class PortraitApp:
         self.root.title("ポートレート生成アプリ")
         
         # カメラ設定
-        self.cap = cv2.VideoCapture(0)
+        self.gui_camera_id = 0  # GUI app用カメラID
+        self.cap = cv2.VideoCapture(self.gui_camera_id)
         self.is_capturing = False
+        self.camera_paused = False  # カメラ一時停止フラグ
         
         # 画像生成キュー
         self.image_queue = queue.Queue(maxsize=10)  # 最大10件まで
@@ -234,9 +236,87 @@ class PortraitApp:
         self.background_combo.grid(row=0, column=1, padx=5)
         self.background_combo.bind('<<ComboboxSelected>>', self.on_background_changed)
         
+        # カメラ設定フレーム
+        camera_frame = ttk.Frame(main_frame)
+        camera_frame.grid(row=8, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Label(camera_frame, text="GUI用カメラID:").grid(row=0, column=0, padx=5)
+        self.gui_camera_var = tk.StringVar(value="0")
+        self.gui_camera_combo = ttk.Combobox(camera_frame, textvariable=self.gui_camera_var, 
+                                           values=["0", "1", "2", "3", "4"], state="readonly", width=5)
+        self.gui_camera_combo.grid(row=0, column=1, padx=5)
+        self.gui_camera_combo.bind('<<ComboboxSelected>>', self.on_gui_camera_changed)
+        
+        # カメラテストボタン
+        self.test_camera_btn = ttk.Button(camera_frame, text="カメラテスト", command=self.test_gui_camera)
+        self.test_camera_btn.grid(row=0, column=2, padx=5)
+        
+        # カメラ状態表示
+        self.gui_camera_status = ttk.Label(camera_frame, text="カメラ0: 接続中")
+        self.gui_camera_status.grid(row=1, column=0, columnspan=3, padx=5, pady=2)
+        
         # メモリクリアボタン（デバッグ用）
         self.cleanup_btn = ttk.Button(main_frame, text="メモリクリア", command=self.manual_cleanup)
-        self.cleanup_btn.grid(row=8, column=0, columnspan=2, padx=5, pady=5)
+        self.cleanup_btn.grid(row=9, column=0, columnspan=2, padx=5, pady=5)
+    
+    def pause_camera(self):
+        """カメラを一時停止（Portrait Experience起動時）"""
+        self.camera_paused = True
+        if self.cap.isOpened():
+            self.cap.release()
+        print("GUI アプリのカメラを一時停止しました")
+    
+    def resume_camera(self):
+        """カメラを再開（Portrait Experience終了時）"""
+        self.camera_paused = False
+        try:
+            self.cap = cv2.VideoCapture(self.gui_camera_id)
+            if self.cap.isOpened():
+                print(f"GUI アプリのカメラ{self.gui_camera_id}を再開しました")
+                self.gui_camera_status.configure(text=f"カメラ{self.gui_camera_id}: 接続中")
+            else:
+                print(f"警告: カメラ{self.gui_camera_id}の再開に失敗しました")
+                self.gui_camera_status.configure(text=f"カメラ{self.gui_camera_id}: 接続失敗")
+        except Exception as e:
+            print(f"カメラ再開エラー: {e}")
+            self.gui_camera_status.configure(text=f"カメラ{self.gui_camera_id}: エラー")
+    
+    def on_gui_camera_changed(self, event):
+        """GUI用カメラが変更されたときの処理"""
+        new_camera_id = int(self.gui_camera_var.get())
+        
+        # 現在のカメラを解放
+        if self.cap.isOpened():
+            self.cap.release()
+        
+        # 新しいカメラを開く
+        self.gui_camera_id = new_camera_id
+        self.cap = cv2.VideoCapture(self.gui_camera_id)
+        
+        if self.cap.isOpened():
+            self.gui_camera_status.configure(text=f"カメラ{self.gui_camera_id}: 接続成功")
+            print(f"GUI用カメラをカメラ{self.gui_camera_id}に変更しました")
+        else:
+            self.gui_camera_status.configure(text=f"カメラ{self.gui_camera_id}: 接続失敗")
+            print(f"カメラ{self.gui_camera_id}への接続に失敗しました")
+    
+    def test_gui_camera(self):
+        """GUI用カメラの接続テスト"""
+        camera_id = int(self.gui_camera_var.get())
+        test_cap = cv2.VideoCapture(camera_id)
+        
+        if test_cap.isOpened():
+            ret, frame = test_cap.read()
+            if ret and frame is not None:
+                self.gui_camera_status.configure(text=f"カメラ{camera_id}: テスト成功")
+                print(f"カメラ{camera_id}のテストに成功しました")
+            else:
+                self.gui_camera_status.configure(text=f"カメラ{camera_id}: 読み取り失敗")
+                print(f"カメラ{camera_id}からのデータ読み取りに失敗しました")
+            test_cap.release()
+        else:
+            self.gui_camera_status.configure(text=f"カメラ{camera_id}: 接続失敗")
+            print(f"カメラ{camera_id}への接続に失敗しました")
     
     def manual_cleanup(self):
         """手動でメモリクリアを実行"""
@@ -244,7 +324,7 @@ class PortraitApp:
         self.status_label.configure(text="メモリクリアを実行しました")
     
     def update_camera(self):
-        if self.cap.isOpened():
+        if not self.camera_paused and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
                 # OpenCVのBGRからRGBに変換
@@ -260,6 +340,10 @@ class PortraitApp:
         self.root.after(30, self.update_camera)
     
     def capture_image(self):
+        if self.camera_paused:
+            self.status_label.configure(text="カメラが一時停止中です（Portrait Experience使用中）")
+            return
+            
         if self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
@@ -427,6 +511,10 @@ class PortraitApp:
         selected_indices = self.video_listbox.curselection()
         if selected_indices:
             selected_video = self.generated_videos[selected_indices[0]]
+            
+            # カメラを一時的に解放してPortrait Experienceでの競合を避ける
+            self.pause_camera()
+            
             # 新しいウィンドウで体験を開始
             experience_window = tk.Toplevel(self.root)
             from portraits_experience import PortraitExperience
@@ -437,6 +525,10 @@ class PortraitApp:
         """PortraitExperienceウィンドウが閉じられたときのコールバック"""
         if experience_instance in self.experience_instances:
             self.experience_instances.remove(experience_instance)
+        
+        # すべてのPortrait Experienceが閉じられたらカメラを再開
+        if not self.experience_instances:
+            self.resume_camera()
     
     def on_background_changed(self, event):
         """背景色が変更されたときの処理"""

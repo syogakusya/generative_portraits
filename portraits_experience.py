@@ -23,8 +23,8 @@ class PortraitExperience:
         # 設定
         self.REAL_FACE_WIDTH = 16.0  # 顔の実際の幅（cm）
         self.FOCAL_LENGTH = 800.0    # カメラの焦点距離（px）
-        self.DIST_MAX = 170.0  # この距離で動画の最初
-        self.DIST_MIN = 120.0  # この距離で動画の最後
+        self.DIST_MAX = 100.0  # この距離で動画の最初
+        self.DIST_MIN = 60.0  # この距離で動画の最後
         
         # デバッグモード
         self.debug_mode = False
@@ -48,8 +48,9 @@ class PortraitExperience:
             min_detection_confidence=0.3
         )
         
-        # カメラの設定
-        self.cap_cam = cv2.VideoCapture(1)
+        # カメラの設定（固定カメラID使用）
+        self.portrait_camera_id = 1  # ポートレート体験用カメラID（デフォルト1）
+        self.cap_cam = cv2.VideoCapture(self.portrait_camera_id)
         
         # 動画の設定
         self.video_path = video_path if video_path else os.path.join('Images/out', 'output.mp4')
@@ -84,6 +85,23 @@ class PortraitExperience:
         
         # カメラプレビューの更新
         self.update_camera()
+    
+    def find_available_camera(self):
+        """利用可能なカメラを検出（GUI appで使用中のカメラを避ける）"""
+        # カメラ0は通常GUI appで使用されているので、1から順番に試す
+        for camera_id in range(1, 5):  # カメラ1-4を試す
+            cap = cv2.VideoCapture(camera_id)
+            if cap.isOpened():
+                # テスト撮影して正常に動作するか確認
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    print(f"カメラ {camera_id} を使用します")
+                    return cap
+                cap.release()
+        
+        # カメラ1-4が利用できない場合、カメラ0を試す（共有使用）
+        print("警告: 専用カメラが見つかりません。カメラ0を共有使用します")
+        return cv2.VideoCapture(0)
     
     def detect_displays(self):
         """利用可能なディスプレイを検出"""
@@ -130,29 +148,63 @@ class PortraitExperience:
         self.face_status_label = ttk.Label(main_frame, text="顔認識: 未検出")
         self.face_status_label.grid(row=2, column=0, padx=5, pady=5)
         
+        # カメラ設定フレーム
+        camera_frame = ttk.LabelFrame(main_frame, text="カメラ設定", padding="5")
+        camera_frame.grid(row=3, column=0, padx=5, pady=10, sticky=(tk.W, tk.E))
+        
+        # カメラ選択モード
+        self.camera_mode_var = tk.StringVar(value="固定")
+        ttk.Label(camera_frame, text="カメラ選択:").grid(row=0, column=0, padx=5)
+        self.camera_mode_combo = ttk.Combobox(camera_frame, textvariable=self.camera_mode_var, 
+                                            values=["固定", "自動検出"], state="readonly", width=10)
+        self.camera_mode_combo.grid(row=0, column=1, padx=5)
+        self.camera_mode_combo.bind('<<ComboboxSelected>>', self.on_camera_mode_changed)
+        
+        # カメラID選択（固定モード用）
+        ttk.Label(camera_frame, text="カメラID:").grid(row=1, column=0, padx=5)
+        self.portrait_camera_var = tk.StringVar(value="1")
+        self.portrait_camera_combo = ttk.Combobox(camera_frame, textvariable=self.portrait_camera_var, 
+                                                values=["0", "1", "2", "3", "4"], state="readonly", width=5)
+        self.portrait_camera_combo.grid(row=1, column=1, padx=5)
+        self.portrait_camera_combo.bind('<<ComboboxSelected>>', self.on_portrait_camera_changed)
+        
+        # カメラテストボタン
+        self.test_portrait_camera_btn = ttk.Button(camera_frame, text="カメラテスト", command=self.test_portrait_camera)
+        self.test_portrait_camera_btn.grid(row=1, column=2, padx=5)
+        
+        # 自動検出ボタン
+        self.auto_detect_btn = ttk.Button(camera_frame, text="自動検出実行", command=self.auto_detect_camera)
+        self.auto_detect_btn.grid(row=0, column=2, padx=5)
+        self.auto_detect_btn.grid_remove()  # 初期状態では非表示
+        
+        # カメラ状態表示ラベル
+        camera_status = "接続OK" if self.cap_cam.isOpened() else "接続エラー"
+        self.camera_status_label = ttk.Label(camera_frame, text=f"カメラ{self.portrait_camera_id}: {camera_status}")
+        self.camera_status_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
+        
         # デバッグモード切り替えチェックボックス
         self.debug_var = tk.BooleanVar()
         self.debug_checkbox = ttk.Checkbutton(main_frame, text="デバッグモード", 
                                              variable=self.debug_var, 
                                              command=self.toggle_debug_mode)
-        self.debug_checkbox.grid(row=3, column=0, padx=5, pady=5)
+        self.debug_checkbox.grid(row=4, column=0, padx=5, pady=5)
         
         # 距離調整スライダー（デバッグモード用）
         self.distance_var = tk.DoubleVar(value=100.0)
         self.distance_slider = ttk.Scale(main_frame, from_=self.DIST_MIN, to=self.DIST_MAX,
                                        variable=self.distance_var, orient=tk.HORIZONTAL,
                                        command=self.on_distance_changed)
-        self.distance_slider.grid(row=4, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        self.distance_slider.grid(row=5, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         self.distance_slider.grid_remove()  # 初期状態では非表示
         
         # スライダー値表示ラベル
         self.slider_label = ttk.Label(main_frame, text="手動距離: 100.0 cm")
-        self.slider_label.grid(row=5, column=0, padx=5, pady=5)
+        self.slider_label.grid(row=6, column=0, padx=5, pady=5)
         self.slider_label.grid_remove()  # 初期状態では非表示
         
         # Arduino設定フレーム
         arduino_frame = ttk.LabelFrame(main_frame, text="Arduino設定", padding="5")
-        arduino_frame.grid(row=6, column=0, padx=5, pady=10, sticky=(tk.W, tk.E))
+        arduino_frame.grid(row=8, column=0, padx=5, pady=10, sticky=(tk.W, tk.E))
         
         # Arduino使用チェックボックス
         self.arduino_var = tk.BooleanVar()
@@ -175,16 +227,16 @@ class PortraitExperience:
         self.video_var = tk.StringVar()
         self.video_combo = ttk.Combobox(main_frame, textvariable=self.video_var)
         self.video_combo['values'] = self.get_video_list()
-        self.video_combo.grid(row=7, column=0, padx=5, pady=5)
+        self.video_combo.grid(row=9, column=0, padx=5, pady=5)
         self.video_combo.bind('<<ComboboxSelected>>', self.on_video_selected)
         
         # フルスクリーン切り替えボタン
         self.fullscreen_btn = ttk.Button(main_frame, text="フルスクリーン切り替え", command=self.toggle_fullscreen)
-        self.fullscreen_btn.grid(row=8, column=0, padx=5, pady=5)
+        self.fullscreen_btn.grid(row=10, column=0, padx=5, pady=5)
         
         # ディスプレイ選択コンボボックス
         display_frame = ttk.Frame(main_frame)
-        display_frame.grid(row=9, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        display_frame.grid(row=11, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         
         ttk.Label(display_frame, text="ディスプレイ:").grid(row=0, column=0, padx=(0, 5))
         self.display_var = tk.StringVar()
@@ -197,15 +249,15 @@ class PortraitExperience:
         
         # 背景色選択ボタン
         self.bgcolor_btn = ttk.Button(main_frame, text="背景色を選択", command=self.choose_bg_color)
-        self.bgcolor_btn.grid(row=10, column=0, padx=5, pady=5)
+        self.bgcolor_btn.grid(row=12, column=0, padx=5, pady=5)
         
         # キャリブレーションボタン
         self.calibrate_btn = ttk.Button(main_frame, text="カメラキャリブレーション", command=self.open_calibration_window)
-        self.calibrate_btn.grid(row=11, column=0, padx=5, pady=5)
+        self.calibrate_btn.grid(row=13, column=0, padx=5, pady=5)
         
         # 終了ボタン
         self.quit_btn = ttk.Button(main_frame, text="終了", command=self.quit)
-        self.quit_btn.grid(row=12, column=0, padx=5, pady=5)
+        self.quit_btn.grid(row=14, column=0, padx=5, pady=5)
         
         # 動画ウィンドウのUI
         self.video_frame = tk.Frame(self.video_window, bg=self.bg_color, padx=10, pady=10)
@@ -255,6 +307,14 @@ class PortraitExperience:
             self.current_frame = 0
     
     def update_camera(self):
+        # カメラが正常に動作しているかチェック
+        if not self.cap_cam.isOpened():
+            self.camera_status_label.configure(text=f"カメラ{self.portrait_camera_id}: 接続エラー")
+            self.face_status_label.configure(text="顔認識: カメラ未接続")
+            # 30ms後に再度更新
+            self.root.after(30, self.update_camera)
+            return
+            
         if self.cap_cam.isOpened():
             ret, frame = self.cap_cam.read()
             if ret:
@@ -500,6 +560,73 @@ class PortraitExperience:
     def open_calibration_window(self):
         # キャリブレーションウィンドウを開く処理を実装
         pass
+
+    def on_portrait_camera_changed(self, event):
+        """ポートレート用カメラが変更されたときの処理"""
+        new_camera_id = int(self.portrait_camera_var.get())
+        
+        # 現在のカメラを解放
+        if self.cap_cam.isOpened():
+            self.cap_cam.release()
+        
+        # 新しいカメラを開く
+        self.portrait_camera_id = new_camera_id
+        self.cap_cam = cv2.VideoCapture(self.portrait_camera_id)
+        
+        if self.cap_cam.isOpened():
+            self.camera_status_label.configure(text=f"カメラ{self.portrait_camera_id}: 接続成功")
+            print(f"ポートレート用カメラをカメラ{self.portrait_camera_id}に変更しました")
+        else:
+            self.camera_status_label.configure(text=f"カメラ{self.portrait_camera_id}: 接続失敗")
+            print(f"カメラ{self.portrait_camera_id}への接続に失敗しました")
+    
+    def test_portrait_camera(self):
+        """ポートレート用カメラの接続テスト"""
+        camera_id = int(self.portrait_camera_var.get())
+        test_cap = cv2.VideoCapture(camera_id)
+        
+        if test_cap.isOpened():
+            ret, frame = test_cap.read()
+            if ret and frame is not None:
+                self.camera_status_label.configure(text=f"カメラ{camera_id}: テスト成功")
+                print(f"カメラ{camera_id}のテストに成功しました")
+            else:
+                self.camera_status_label.configure(text=f"カメラ{camera_id}: 読み取り失敗")
+                print(f"カメラ{camera_id}からのデータ読み取りに失敗しました")
+            test_cap.release()
+        else:
+            self.camera_status_label.configure(text=f"カメラ{camera_id}: 接続失敗")
+            print(f"カメラ{camera_id}への接続に失敗しました")
+    
+    def on_camera_mode_changed(self, event):
+        """カメラ選択モードが変更されたときの処理"""
+        mode = self.camera_mode_var.get()
+        if mode == "自動検出":
+            # 自動検出ボタンを表示、カメラID選択とテストボタンを非表示
+            self.auto_detect_btn.grid()
+            self.portrait_camera_combo.configure(state="disabled")
+            self.test_portrait_camera_btn.grid_remove()
+        else:
+            # 固定モード：カメラID選択とテストボタンを表示、自動検出ボタンを非表示
+            self.auto_detect_btn.grid_remove()
+            self.portrait_camera_combo.configure(state="readonly")
+            self.test_portrait_camera_btn.grid()
+    
+    def auto_detect_camera(self):
+        """利用可能なカメラを自動検出して設定"""
+        # 現在のカメラを解放
+        if self.cap_cam.isOpened():
+            self.cap_cam.release()
+        
+        # 自動検出実行
+        detected_camera = self.find_available_camera()
+        if detected_camera.isOpened():
+            self.cap_cam = detected_camera
+            self.camera_status_label.configure(text="自動検出: 成功")
+            print("カメラの自動検出に成功しました")
+        else:
+            self.camera_status_label.configure(text="自動検出: 失敗")
+            print("利用可能なカメラが見つかりませんでした")
 
     def choose_bg_color(self):
         color_code = colorchooser.askcolor(title="背景色を選択")
