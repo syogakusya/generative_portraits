@@ -178,6 +178,69 @@ table td {width: %dpx; height: %dpx; padding: 4px; outline: 4px solid black}
             frame_path = os.path.join(output_dir, frame_filename)
             util.save_image(next_im, frame_path)
 
+    def save_paper_image(self, visuals, image_path, include_original=True):
+        visual = visuals[0]
+        orig_img = visual['orig_img']
+        h, w, c = orig_img.shape
+        
+        out_classes = len(visual) - 1
+        
+        gap_width = 30
+        overlap_width = 50  # 画像同士のオーバーラップ幅（グレー領域を考慮）
+        
+        selected_frames = []
+        if out_classes >= 5:
+            indices = [
+                0,
+                out_classes // 5,
+                out_classes // 4,
+                out_classes // 3,
+                out_classes // 2,
+                (out_classes * 2) // 3,
+                (out_classes * 3) // 4,
+                (out_classes * 4) // 5,
+                out_classes - 1
+            ]
+        else:
+            indices = list(range(min(5, out_classes)))
+        
+        for idx in indices:
+            if idx < out_classes:
+                selected_frames.append(visual['tex_trans_to_class_' + str(idx)])
+        
+        # オーバーラップを考慮した全体幅を計算
+        if len(selected_frames) > 0:
+            # 各画像がoverlap_width分重なるように配置
+            overlapped_width = w + (len(selected_frames) - 1) * (w - overlap_width)
+            if include_original:
+                total_width = w + gap_width + overlapped_width
+            else:
+                total_width = overlapped_width
+        else:
+            total_width = w if include_original else 0
+        
+        paper_img = np.full((h, total_width, c), 255, dtype=np.uint8)
+        
+        # オリジナル画像を配置（include_originalがTrueの場合のみ）
+        current_x = 0
+        if include_original:
+            paper_img[:, :w] = orig_img
+            current_x = w + gap_width
+        
+        # 生成画像をオーバーラップさせながら配置
+        for i, frame in enumerate(selected_frames):
+            # 画像を配置（前の画像と重ねる）
+            end_x = min(current_x + w, total_width)
+            frame_width = end_x - current_x
+            
+            if frame_width > 0:
+                paper_img[:, current_x:end_x] = frame[:, :frame_width]
+            
+            # 次の画像の配置位置（オーバーラップ分だけ前に配置）
+            current_x += (w - overlap_width)
+        
+        util.save_image(paper_img, image_path)
+
     # save image to the disk
     def save_images_deploy(self, visuals, image_path):
         for i in range(len(visuals)):

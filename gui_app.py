@@ -66,7 +66,7 @@ class PortraitApp:
                     self.generated_videos.append(os.path.join(video_dir, file))
     
     def load_existing_images(self):
-        """既存の画像まとめファイルと画像フレームディレクトリを読み込む"""
+        """既存の画像まとめファイル、論文用画像、画像フレームディレクトリを読み込む"""
         image_dir = 'Images/out'
         if os.path.exists(image_dir):
             for item in os.listdir(image_dir):
@@ -76,6 +76,15 @@ class PortraitApp:
                 if item.startswith('combined_') and item.endswith('.png'):
                     self.generated_files.append(("画像まとめ", item_path))
                     self.video_listbox.insert(tk.END, f"[画像まとめ] {item}")
+                
+                # 論文用画像ファイル
+                elif item.startswith('paper_') and item.endswith('.png'):
+                    if item.startswith('paper_gen_'):
+                        self.generated_files.append(("論文用画像（生成のみ）", item_path))
+                        self.video_listbox.insert(tk.END, f"[論文用画像（生成のみ）] {item}")
+                    else:
+                        self.generated_files.append(("論文用画像", item_path))
+                        self.video_listbox.insert(tk.END, f"[論文用画像] {item}")
                 
                 # 画像フレームディレクトリ
                 elif item.startswith('frames_') and os.path.isdir(item_path):
@@ -206,28 +215,36 @@ class PortraitApp:
     
     def create_widgets(self):
         # メインフレーム
-        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame = ttk.Frame(self.root, padding="5")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
+        # 左側カラム（カメラとファイルリスト）
+        left_frame = ttk.Frame(main_frame)
+        left_frame.grid(row=0, column=0, padx=5, pady=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
         # カメラプレビュー
-        self.camera_label = ttk.Label(main_frame)
-        self.camera_label.grid(row=0, column=0, columnspan=2, padx=5, pady=5)
+        self.camera_label = ttk.Label(left_frame)
+        self.camera_label.grid(row=0, column=0, padx=2, pady=2)
         
         # ボタンフレーム
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+        button_frame = ttk.Frame(left_frame)
+        button_frame.grid(row=1, column=0, padx=2, pady=2)
         
         # 撮影ボタン
         self.capture_btn = ttk.Button(button_frame, text="撮影", command=self.capture_image)
-        self.capture_btn.grid(row=0, column=0, padx=5)
+        self.capture_btn.grid(row=0, column=0, padx=2)
         
         # 画像選択ボタン
         self.select_image_btn = ttk.Button(button_frame, text="画像を選択", command=self.select_image)
-        self.select_image_btn.grid(row=0, column=1, padx=5)
+        self.select_image_btn.grid(row=0, column=1, padx=2)
+        
+        # 体験開始ボタン
+        self.experience_btn = ttk.Button(button_frame, text="体験開始", command=self.start_experience)
+        self.experience_btn.grid(row=0, column=2, padx=2)
         
         # 生成済みファイルリスト
-        list_frame = ttk.Frame(main_frame)
-        list_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
+        list_frame = ttk.Frame(left_frame)
+        list_frame.grid(row=2, column=0, padx=2, pady=2, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # リストボックスのラベル
         self.list_label = ttk.Label(list_frame, text="生成済みファイル：")
@@ -235,23 +252,94 @@ class PortraitApp:
         
         # ボタンフレーム
         list_button_frame = ttk.Frame(list_frame)
-        list_button_frame.grid(row=0, column=1, padx=5, sticky=tk.E)
+        list_button_frame.grid(row=0, column=1, padx=2, sticky=tk.E)
         
         # ファイルを開くボタン
         self.open_file_btn = ttk.Button(list_button_frame, text="ファイルを開く", command=self.open_selected_file)
-        self.open_file_btn.grid(row=0, column=0, padx=2)
+        self.open_file_btn.grid(row=0, column=0, padx=1)
         
         # フォルダを開くボタン
         self.open_folder_btn = ttk.Button(list_button_frame, text="フォルダを開く", command=self.open_output_folder)
-        self.open_folder_btn.grid(row=0, column=1, padx=2)
+        self.open_folder_btn.grid(row=0, column=1, padx=1)
         
         # スクロールバー付きリストボックス
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
-        self.video_listbox = tk.Listbox(list_frame, height=5, yscrollcommand=scrollbar.set)
+        self.video_listbox = tk.Listbox(list_frame, height=4, yscrollcommand=scrollbar.set)
         scrollbar.config(command=self.video_listbox.yview)
         
         self.video_listbox.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
         scrollbar.grid(row=1, column=2, sticky=(tk.N, tk.S))
+        
+        # 右側カラム（設定とステータス）
+        right_frame = ttk.Frame(main_frame)
+        right_frame.grid(row=0, column=1, padx=5, pady=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 設定グループ1
+        settings1_frame = ttk.LabelFrame(right_frame, text="基本設定", padding="5")
+        settings1_frame.grid(row=0, column=0, padx=2, pady=2, sticky=(tk.W, tk.E))
+        
+        # 性別選択
+        ttk.Label(settings1_frame, text="性別:").grid(row=0, column=0, padx=2, sticky=tk.W)
+        self.gender_var = tk.StringVar(value="女性")
+        self.gender_combo = ttk.Combobox(settings1_frame, textvariable=self.gender_var, 
+                                        values=["女性", "男性"], state="readonly", width=8)
+        self.gender_combo.grid(row=0, column=1, padx=2, sticky=tk.W)
+        self.gender_combo.bind('<<ComboboxSelected>>', self.on_gender_changed)
+        
+        # 背景色選択
+        ttk.Label(settings1_frame, text="背景色:").grid(row=1, column=0, padx=2, sticky=tk.W)
+        self.background_var = tk.StringVar(value="黒")
+        self.background_combo = ttk.Combobox(settings1_frame, textvariable=self.background_var, 
+                                           values=["黒", "グレー", "白"], state="readonly", width=8)
+        self.background_combo.grid(row=1, column=1, padx=2, sticky=tk.W)
+        self.background_combo.bind('<<ComboboxSelected>>', self.on_background_changed)
+        
+        # 設定グループ2
+        settings2_frame = ttk.LabelFrame(right_frame, text="出力設定", padding="5")
+        settings2_frame.grid(row=1, column=0, padx=2, pady=2, sticky=(tk.W, tk.E))
+        
+        # 出力形式選択
+        ttk.Label(settings2_frame, text="出力形式:").grid(row=0, column=0, padx=2, sticky=tk.W)
+        self.output_format_var = tk.StringVar(value="動画のみ")
+        self.output_format_combo = ttk.Combobox(settings2_frame, textvariable=self.output_format_var, 
+                                              values=["動画のみ", "画像フレームのみ", "画像まとめのみ", "論文用画像", "論文用画像（生成のみ）", "動画+画像フレーム", "動画+画像まとめ", "動画+論文用画像", "すべて"], 
+                                              state="readonly", width=20)
+        self.output_format_combo.grid(row=0, column=1, padx=2, sticky=tk.W)
+        
+        # カメラ設定グループ
+        camera_frame = ttk.LabelFrame(right_frame, text="カメラ設定", padding="5")
+        camera_frame.grid(row=2, column=0, padx=2, pady=2, sticky=(tk.W, tk.E))
+        
+        ttk.Label(camera_frame, text="カメラID:").grid(row=0, column=0, padx=2, sticky=tk.W)
+        self.gui_camera_var = tk.StringVar(value="0")
+        self.gui_camera_combo = ttk.Combobox(camera_frame, textvariable=self.gui_camera_var, 
+                                           values=["0", "1", "2", "3", "4"], state="readonly", width=5)
+        self.gui_camera_combo.grid(row=0, column=1, padx=2, sticky=tk.W)
+        self.gui_camera_combo.bind('<<ComboboxSelected>>', self.on_gui_camera_changed)
+        
+        # カメラテストボタン
+        self.test_camera_btn = ttk.Button(camera_frame, text="テスト", command=self.test_gui_camera)
+        self.test_camera_btn.grid(row=0, column=2, padx=2)
+        
+        # カメラ状態表示
+        self.gui_camera_status = ttk.Label(camera_frame, text="カメラ0: 接続中")
+        self.gui_camera_status.grid(row=1, column=0, columnspan=3, padx=2, pady=1)
+        
+        # ステータスグループ
+        status_frame = ttk.LabelFrame(right_frame, text="ステータス", padding="5")
+        status_frame.grid(row=3, column=0, padx=2, pady=2, sticky=(tk.W, tk.E))
+        
+        # 進捗バー
+        self.progress = ttk.Progressbar(status_frame, length=180, mode='determinate')
+        self.progress.grid(row=0, column=0, padx=2, pady=2, sticky=(tk.W, tk.E))
+        
+        # ステータスラベル
+        self.status_label = ttk.Label(status_frame, text="準備完了")
+        self.status_label.grid(row=1, column=0, padx=2, pady=2, sticky=(tk.W, tk.E))
+        
+        # メモリクリアボタン（デバッグ用）
+        self.cleanup_btn = ttk.Button(status_frame, text="メモリクリア", command=self.manual_cleanup)
+        self.cleanup_btn.grid(row=2, column=0, padx=2, pady=2)
         
         # 生成済みファイルリスト（動画と画像）
         self.generated_files = []
@@ -264,72 +352,12 @@ class PortraitApp:
         # 既存の画像まとめファイルも読み込む
         self.load_existing_images()
         
-        # 進捗バー
-        self.progress = ttk.Progressbar(main_frame, length=200, mode='determinate')
-        self.progress.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
-        
-        # ステータスラベル
-        self.status_label = ttk.Label(main_frame, text="準備完了")
-        self.status_label.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
-        
-        # 性別選択フレーム
-        gender_frame = ttk.Frame(main_frame)
-        gender_frame.grid(row=5, column=0, columnspan=2, padx=5, pady=5)
-        
-        ttk.Label(gender_frame, text="性別:").grid(row=0, column=0, padx=5)
-        self.gender_var = tk.StringVar(value="女性")
-        self.gender_combo = ttk.Combobox(gender_frame, textvariable=self.gender_var, 
-                                        values=["女性", "男性"], state="readonly")
-        self.gender_combo.grid(row=0, column=1, padx=5)
-        self.gender_combo.bind('<<ComboboxSelected>>', self.on_gender_changed)
-        
-        # 体験開始ボタン
-        self.experience_btn = ttk.Button(main_frame, text="体験開始", command=self.start_experience)
-        self.experience_btn.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
-        
-        # 背景色選択
-        background_frame = ttk.Frame(main_frame)
-        background_frame.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
-        
-        ttk.Label(background_frame, text="背景色:").grid(row=0, column=0, padx=5)
-        self.background_var = tk.StringVar(value="黒")
-        self.background_combo = ttk.Combobox(background_frame, textvariable=self.background_var, 
-                                           values=["黒", "グレー", "白"], state="readonly")
-        self.background_combo.grid(row=0, column=1, padx=5)
-        self.background_combo.bind('<<ComboboxSelected>>', self.on_background_changed)
-        
-        # 出力形式選択
-        output_frame = ttk.Frame(main_frame)
-        output_frame.grid(row=8, column=0, columnspan=2, padx=5, pady=5)
-        
-        ttk.Label(output_frame, text="出力形式:").grid(row=0, column=0, padx=5)
-        self.output_format_var = tk.StringVar(value="動画のみ")
-        self.output_format_combo = ttk.Combobox(output_frame, textvariable=self.output_format_var, 
-                                              values=["動画のみ", "画像フレームのみ", "画像まとめのみ", "動画+画像フレーム", "動画+画像まとめ", "すべて"], state="readonly")
-        self.output_format_combo.grid(row=0, column=1, padx=5)
-        
-        # カメラ設定フレーム
-        camera_frame = ttk.Frame(main_frame)
-        camera_frame.grid(row=9, column=0, columnspan=2, padx=5, pady=5)
-        
-        ttk.Label(camera_frame, text="GUI用カメラID:").grid(row=0, column=0, padx=5)
-        self.gui_camera_var = tk.StringVar(value="0")
-        self.gui_camera_combo = ttk.Combobox(camera_frame, textvariable=self.gui_camera_var, 
-                                           values=["0", "1", "2", "3", "4"], state="readonly", width=5)
-        self.gui_camera_combo.grid(row=0, column=1, padx=5)
-        self.gui_camera_combo.bind('<<ComboboxSelected>>', self.on_gui_camera_changed)
-        
-        # カメラテストボタン
-        self.test_camera_btn = ttk.Button(camera_frame, text="カメラテスト", command=self.test_gui_camera)
-        self.test_camera_btn.grid(row=0, column=2, padx=5)
-        
-        # カメラ状態表示
-        self.gui_camera_status = ttk.Label(camera_frame, text="カメラ0: 接続中")
-        self.gui_camera_status.grid(row=1, column=0, columnspan=3, padx=5, pady=2)
-        
-        # メモリクリアボタン（デバッグ用）
-        self.cleanup_btn = ttk.Button(main_frame, text="メモリクリア", command=self.manual_cleanup)
-        self.cleanup_btn.grid(row=10, column=0, columnspan=2, padx=5, pady=5)
+        # グリッドの重みを設定
+        main_frame.grid_columnconfigure(0, weight=2)
+        main_frame.grid_columnconfigure(1, weight=1)
+        main_frame.grid_rowconfigure(0, weight=1)
+        left_frame.grid_rowconfigure(2, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
     
     def pause_camera(self):
         """カメラを一時停止（Portrait Experience起動時）"""
@@ -557,6 +585,26 @@ class PortraitApp:
                 self.generated_files.append(("画像まとめ", image_path_output))
                 self.video_listbox.insert(tk.END, f"[画像まとめ] {os.path.basename(image_path_output)}")
             
+            # 論文用画像生成（オリジナル画像あり）
+            if output_format in ["論文用画像", "動画+論文用画像", "すべて"]:
+                paper_path_output = os.path.join('Images/out', f'paper_{timestamp}.png')
+                self.visualizer.save_paper_image(visuals, paper_path_output, include_original=True)
+                generated_files.append(("論文用画像", paper_path_output))
+                
+                # 生成済みファイルリストに追加
+                self.generated_files.append(("論文用画像", paper_path_output))
+                self.video_listbox.insert(tk.END, f"[論文用画像] {os.path.basename(paper_path_output)}")
+            
+            # 論文用画像生成（生成画像のみ）
+            if output_format in ["論文用画像（生成のみ）", "すべて"]:
+                paper_gen_path_output = os.path.join('Images/out', f'paper_gen_{timestamp}.png')
+                self.visualizer.save_paper_image(visuals, paper_gen_path_output, include_original=False)
+                generated_files.append(("論文用画像（生成のみ）", paper_gen_path_output))
+                
+                # 生成済みファイルリストに追加
+                self.generated_files.append(("論文用画像（生成のみ）", paper_gen_path_output))
+                self.video_listbox.insert(tk.END, f"[論文用画像（生成のみ）] {os.path.basename(paper_gen_path_output)}")
+            
             # メモリ解放
             del data
             if visuals is not None:
@@ -632,6 +680,10 @@ class PortraitApp:
                 self.experience_instances.append(experience_instance)
             elif file_type == "画像フレーム":
                 self.status_label.configure(text="体験機能は動画ファイルのみに対応しています。画像フレームは「ファイルを開く」で確認できます")
+            elif file_type == "論文用画像":
+                self.status_label.configure(text="体験機能は動画ファイルのみに対応しています。論文用画像は「ファイルを開く」で確認できます")
+            elif file_type == "論文用画像（生成のみ）":
+                self.status_label.configure(text="体験機能は動画ファイルのみに対応しています。論文用画像は「ファイルを開く」で確認できます")
             else:
                 self.status_label.configure(text="体験機能は動画ファイルのみに対応しています")
     
