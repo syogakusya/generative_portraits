@@ -10,6 +10,7 @@ from .base_model import BaseModel
 import util.util as util
 from . import networks
 from pdb import set_trace as st
+from torch.autograd import Variable
 
 class LATS(BaseModel): #Lifetime Age Transformation Synthesis
     def name(self):
@@ -167,53 +168,61 @@ class LATS(BaseModel): #Lifetime Age Transformation Synthesis
 
     def set_inputs(self, data, mode='train'):
         # set input data to feed to the network
+        input_dict = data
         if mode == 'train':
-            real_A = data['A']
-            real_B = data['B']
-
-            self.class_A = data['A_class']
-            self.class_B = data['B_class']
-
-            self.reals = torch.cat((real_A, real_B), 0)
-
-            if len(self.gpu_ids) > 0:
-                self.reals = self.reals.cuda()
-
+            # training mode
+            self.reals = Variable(input_dict['A']).cuda()
+            self.reals_B = Variable(input_dict['B']).cuda()
+            self.class_A = input_dict['A_class'].cuda()
+            self.class_B = input_dict['B_class'].cuda()
+            self.paths = input_dict['A_paths']
+            self.numValid = self.reals.size(0)
+            self.isEmpty = self.numValid == 0
         else:
-            inputs = data['Imgs']
-            if inputs.dim() > 4:
-                inputs = inputs.squeeze(0)
-
-            self.class_A = data['Classes']
-            if self.class_A.dim() > 1:
-                self.class_A = self.class_A.squeeze(0)
-
-            if torch.is_tensor(data['Valid']):
-                self.valid = data['Valid'].bool()
+            # inference mode
+            self.reals = Variable(input_dict['Imgs']).cuda()
+            self.paths = input_dict['Paths']
+            self.class_A = Variable(input_dict['Classes']).cuda()
+            self.valid = input_dict['Valid']
+            
+            # self.validがboolの場合はtensorに変換
+            if isinstance(self.valid, bool):
+                self.valid = torch.tensor([self.valid], dtype=torch.bool)
+            elif not torch.is_tensor(self.valid):
+                self.valid = torch.tensor(self.valid, dtype=torch.bool)
+            
+            self.isEmpty = self.reals.size(0) == 0
+            
+            # 論文用画像でオリジナル背景保持の場合の画像を保存
+            if 'Original_Img_For_Paper' in input_dict:
+                self.original_for_paper = [input_dict['Original_Img_For_Paper']]
             else:
-                self.valid = torch.ones(1, dtype=torch.bool)
+                self.original_for_paper = None
 
-            if self.valid.dim() > 1:
-                self.valid = self.valid.squeeze(0)
+            if self.isEmpty:
+                return
 
-            if isinstance(data['Paths'][0], tuple):
-                self.image_paths = [path[0] for path in data['Paths']]
-            else:
-                self.image_paths = data['Paths']
+            if self.reals.dim() == 3:
+                self.reals = self.reals.unsqueeze(0)
 
-            self.isEmpty = False if any(self.valid) else True
-            if not self.isEmpty:
-                available_idx = torch.arange(len(self.class_A))
-                select_idx = torch.masked_select(available_idx, self.valid).long()
-                inputs = torch.index_select(inputs, 0, select_idx)
+            if type(self.class_A) == list:
+                self.class_A = self.class_A[0].cuda()
 
-                self.class_A = torch.index_select(self.class_A, 0, select_idx)
-                self.image_paths = [val for i, val in enumerate(self.image_paths) if self.valid[i] == 1]
+            self.numValid = self.valid.sum().item()
 
-            self.reals = inputs
+            if self.numValid == 0:
+                self.isEmpty = True
+                return
 
-            if len(self.gpu_ids) > 0:
-                self.reals = self.reals.cuda()
+            reals_list = []
+            class_A_list = []
+            for i in range(self.reals.size(0)):
+                if self.valid[i]:
+                    reals_list += [self.reals[i:i+1, :, :, :]]
+                    class_A_list += [self.class_A]
+
+            self.reals = torch.cat(reals_list, 0)
+            self.class_A = torch.cat(class_A_list, 0).squeeze()
 
 
     def get_conditions(self, mode='train'):
@@ -473,6 +482,11 @@ class LATS(BaseModel): #Lifetime Age Transformation Synthesis
                 orig_dict = OrderedDict([('orig_img_cls_' + str(self.class_A[i].item()), real_A_img)])
 
             return_dicts[i].update(orig_dict)
+
+            # 論文用画像でオリジナル背景保持の場合の画像を追加
+            if hasattr(self, 'original_for_paper') and self.original_for_paper is not None:
+                paper_orig_dict = OrderedDict([('paper_orig_img', self.original_for_paper[i])])
+                return_dicts[i].update(paper_orig_dict)
 
             # set output classes numebr
             if self.traverse:

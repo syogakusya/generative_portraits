@@ -181,9 +181,19 @@ table td {width: %dpx; height: %dpx; padding: 4px; outline: 4px solid black}
     def save_paper_image(self, visuals, image_path, include_original=True):
         visual = visuals[0]
         orig_img = visual['orig_img']
+        
+        # 論文用画像でオリジナル背景保持が設定されている場合は専用の画像を使用
+        if 'paper_orig_img' in visual:
+            paper_orig_img = visual['paper_orig_img']
+        else:
+            paper_orig_img = orig_img
+        
         h, w, c = orig_img.shape
         
         out_classes = len(visual) - 1
+        # paper_orig_imgがあれば1つ分を差し引く
+        if 'paper_orig_img' in visual:
+            out_classes -= 1
         
         gap_width = 30
         overlap_width = 50  # 画像同士のオーバーラップ幅（グレー領域を考慮）
@@ -224,7 +234,7 @@ table td {width: %dpx; height: %dpx; padding: 4px; outline: 4px solid black}
         # オリジナル画像を配置（include_originalがTrueの場合のみ）
         current_x = 0
         if include_original:
-            paper_img[:, :w] = orig_img
+            paper_img[:, :w] = paper_orig_img
             current_x = w + gap_width
         
         # 生成画像をオーバーラップさせながら配置

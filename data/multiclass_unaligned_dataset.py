@@ -118,9 +118,22 @@ class MulticlassUnalignedDataset(BaseDataset):
         """背景色を設定する (0=黒, 128=グレー, 255=白)"""
         self.background_color = color
 
+    def set_disable_background_mask(self, disable=False):
+        """背景マスクを無効にする設定"""
+        self.disable_background_mask = disable
+
+    def set_keep_original_for_paper(self, keep=False):
+        """論文用画像でオリジナル背景を保持する設定"""
+        self.keep_original_for_paper = keep
+
     def mask_image(self, img, parsings, background_color=None):
         if background_color is None:
             background_color = self.background_color
+        
+        # 背景マスクが無効化されている場合は、元の画像をそのまま返す
+        if hasattr(self, 'disable_background_mask') and self.disable_background_mask:
+            return img
+            
         labels_to_mask = [0,14,15,16,18]
         for idx in labels_to_mask:
             img[parsings == idx] = background_color
@@ -132,8 +145,21 @@ class MulticlassUnalignedDataset(BaseDataset):
         img = Image.open(path).convert('RGB')
         img = np.array(img.getdata(), dtype=np.uint8).reshape(img.size[1], img.size[0], 3)
 
+        # 元画像を保存（論文用画像でオリジナル背景保持用）
+        original_img = None
+        if hasattr(self, 'keep_original_for_paper') and self.keep_original_for_paper:
+            if self.in_the_wild:
+                # オリジナル画像のサイズ調整のみ実行
+                landmarks = self.preprocessor.extract_face_landmarks(img)
+                aligned_original = self.preprocessor.align_in_the_wild_image(img, landmarks)
+                original_img = np.array(aligned_original.getdata(), dtype=np.uint8).reshape(self.preprocessor.out_size, self.preprocessor.out_size, 3)
+
         if self.in_the_wild:
-            img, parsing = self.preprocessor.forward(img)
+            # オリジナル画像モードの場合は背景セグメンテーションを省略
+            if hasattr(self, 'disable_background_mask') and self.disable_background_mask:
+                img, parsing = self.preprocessor.forward_original_only(img)
+            else:
+                img, parsing = self.preprocessor.forward(img)
         else:
             parsing_path = os.path.join(path_dir, 'parsings', im_name[:-4] + '.png')
             parsing = Image.open(parsing_path).convert('RGB')
@@ -142,10 +168,16 @@ class MulticlassUnalignedDataset(BaseDataset):
         img = Image.fromarray(self.mask_image(img, parsing))
         img = self.transform(img).unsqueeze(0)
 
-        return {'Imgs': img,
-                'Paths': [path],
-                'Classes': torch.zeros(1, dtype=torch.int),
-                'Valid': True}
+        result = {'Imgs': img,
+                 'Paths': [path],
+                 'Classes': torch.zeros(1, dtype=torch.int),
+                 'Valid': True}
+        
+        # オリジナル画像を保存（論文用画像でオリジナル背景保持用）
+        if original_img is not None:
+            result['Original_Img_For_Paper'] = original_img
+        
+        return result
 
     def __getitem__(self, index):
         if self.opt.isTrain and not self.get_samples:

@@ -158,6 +158,11 @@ class PortraitApp:
         background_color = color_map.get(selected, 0)
         self.dataset.dataset.set_background_color(background_color)
         
+        # 論文用画像でのオリジナル背景保持の設定を適用
+        paper_original = self.paper_original_var.get()
+        keep_original_for_paper = (paper_original == "オリジナル背景保持")
+        self.dataset.dataset.set_keep_original_for_paper(keep_original_for_paper)
+        
         self.model = create_model(self.opt)
         self.model.eval()
         
@@ -293,6 +298,14 @@ class PortraitApp:
                                            values=["黒", "グレー", "白"], state="readonly", width=8)
         self.background_combo.grid(row=1, column=1, padx=2, sticky=tk.W)
         self.background_combo.bind('<<ComboboxSelected>>', self.on_background_changed)
+
+        # 論文用画像でのオリジナル背景保持
+        ttk.Label(settings1_frame, text="論文用画像:").grid(row=2, column=0, padx=2, sticky=tk.W)
+        self.paper_original_var = tk.StringVar(value="背景切り抜き")
+        self.paper_original_combo = ttk.Combobox(settings1_frame, textvariable=self.paper_original_var, 
+                                               values=["背景切り抜き", "オリジナル背景保持"], state="readonly", width=12)
+        self.paper_original_combo.grid(row=2, column=1, padx=2, sticky=tk.W)
+        self.paper_original_combo.bind('<<ComboboxSelected>>', self.on_paper_original_changed)
         
         # 設定グループ2
         settings2_frame = ttk.LabelFrame(right_frame, text="出力設定", padding="5")
@@ -587,7 +600,12 @@ class PortraitApp:
             
             # 論文用画像生成（オリジナル画像あり）
             if output_format in ["論文用画像", "動画+論文用画像", "すべて"]:
-                paper_path_output = os.path.join('Images/out', f'paper_{timestamp}.png')
+                # 論文用画像でのオリジナル背景保持モードの場合は、ファイル名を変更
+                paper_original = self.paper_original_var.get()
+                if paper_original == "オリジナル背景保持":
+                    paper_path_output = os.path.join('Images/out', f'paper_orig_{timestamp}.png')
+                else:
+                    paper_path_output = os.path.join('Images/out', f'paper_{timestamp}.png')
                 self.visualizer.save_paper_image(visuals, paper_path_output, include_original=True)
                 generated_files.append(("論文用画像", paper_path_output))
                 
@@ -709,6 +727,11 @@ class PortraitApp:
         if hasattr(self, 'dataset') and self.dataset is not None:
             self.dataset.dataset.set_background_color(background_color)
             print(f"背景色を {selected}({background_color}) に設定しました")
+            
+            # 論文用画像でのオリジナル背景保持設定も再適用
+            paper_original = self.paper_original_var.get()
+            keep_original_for_paper = (paper_original == "オリジナル背景保持")
+            self.dataset.dataset.set_keep_original_for_paper(keep_original_for_paper)
     
     def on_gender_changed(self, event):
         """性別が変更されたときの処理"""
@@ -725,6 +748,29 @@ class PortraitApp:
         self.status_label.configure(text=f"モデル切り替え中: {selected}")
         
         # setup_modelが性別に応じて適切なモデルを設定するので、直接呼び出す
+        try:
+            self.setup_model()
+            self.status_label.configure(text=f"モデル切り替え完了: {selected}")
+            print(f"{selected}用のモデルロードが完了しました")
+        except Exception as e:
+            self.status_label.configure(text=f"モデル切り替えエラー: {str(e)}")
+            print(f"モデル切り替えエラー: {e}")
+    
+    def on_paper_original_changed(self, event):
+        """論文用画像でのオリジナル背景保持が変更されたときの処理"""
+        selected = self.paper_original_var.get()
+        print(f"論文用画像でのオリジナル背景保持が変更されました: {selected}")
+        
+        # 既存のモデルをクリーンアップ
+        if self.model is not None:
+            print("既存のモデルをクリーンアップしています...")
+            self.cleanup_model()
+        
+        # 新しい設定でモデルをロード
+        print(f"新しいモデル({selected})をロード中...")
+        self.status_label.configure(text=f"モデル切り替え中: {selected}")
+        
+        # setup_modelが論文用画像でのオリジナル背景保持に応じて適切なモデルを設定するので、直接呼び出す
         try:
             self.setup_model()
             self.status_label.configure(text=f"モデル切り替え完了: {selected}")
