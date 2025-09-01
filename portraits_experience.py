@@ -414,18 +414,26 @@ class PortraitExperience:
         # 動画ウィンドウのUI
         self.video_frame = tk.Frame(self.video_window, bg=self.bg_color, padx=10, pady=10)
         self.video_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        # 親ウィンドウも拡張
+        try:
+            self.video_window.rowconfigure(0, weight=1)
+            self.video_window.columnconfigure(0, weight=1)
+        except Exception:
+            pass
         
-        # video_frameの格子設定
+        # video_frameの格子設定（コンテンツでサイズが変わらないよう固定）
         self.video_frame.grid_rowconfigure(0, weight=1)
         self.video_frame.grid_columnconfigure(0, weight=1)
+        self.video_frame.grid_propagate(False)
 
         # 動画プレビュー
         self.video_label = tk.Label(self.video_frame, bg=self.bg_color)
         self.video_label.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
-        def _on_video_label_configure(event):
-            self.video_target_width = max(1, event.width)
-            self.video_target_height = max(1, event.height)
-        self.video_label.bind('<Configure>', _on_video_label_configure)
+        def _on_video_frame_configure(event):
+            # 親フレームの内側サイズから描画ターゲットを決める
+            self.video_target_width = max(1, event.width - 10)
+            self.video_target_height = max(1, event.height - 10)
+        self.video_frame.bind('<Configure>', _on_video_frame_configure)
         
         # 動画ウィンドウのキーバインド
         self.video_window.bind('<KeyPress-Escape>', self.exit_fullscreen)
@@ -613,24 +621,30 @@ class PortraitExperience:
                     background.paste(video_image, (x, y))
                     video_photo = ImageTk.PhotoImage(image=background)
                 else:
-                    # 通常表示：video_labelのサイズにフィット
-                    tw = max(1, int(self.video_target_width))
-                    th = max(1, int(self.video_target_height))
+                    # 通常表示：video_frame は video_frame内の固定領域にフィット
+                    tw = int(self.video_target_width)
+                    th = int(self.video_target_height)
+                    tw = max(1, tw)
+                    th = max(1, th)
                     h, w = video_frame.shape[:2]
                     aspect_ratio = w / h
-                    target_ratio = tw / th if th != 0 else aspect_ratio
+                    target_ratio = tw / th
                     if target_ratio > aspect_ratio:
                         new_height = th
                         new_width = int(th * aspect_ratio)
                     else:
                         new_width = tw
                         new_height = int(tw / aspect_ratio)
+                    # 正確な整数へ
+                    new_width = max(1, int(new_width))
+                    new_height = max(1, int(new_height))
                     video_frame = cv2.resize(video_frame, (new_width, new_height))
                     video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
                     video_image = Image.fromarray(video_frame)
-                    background = Image.new('RGB', (tw, th), self.bg_color)
-                    x = (tw - video_image.width) // 2
-                    y = (th - video_image.height) // 2
+                    bg_w, bg_h = tw, th
+                    background = Image.new('RGB', (bg_w, bg_h), self.bg_color)
+                    x = (bg_w - video_image.width) // 2
+                    y = (bg_h - video_image.height) // 2
                     background.paste(video_image, (x, y))
                     video_photo = ImageTk.PhotoImage(image=background)
                 

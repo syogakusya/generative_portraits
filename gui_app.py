@@ -43,6 +43,10 @@ class PortraitApp:
         self.preview_label = None
         self.preview_target_width = 800
         self.preview_target_height = 600
+
+        # 撮影プレビュー固定表示制御
+        self.capture_preview_active = False
+        self.capture_preview_pil = None
         
         # モデルを初期化時にはロードしない（遅延ロード）
         self.model = None
@@ -466,37 +470,38 @@ class PortraitApp:
         self.status_label.configure(text="メモリクリアを実行しました")
     
     def update_camera(self):
-        if not self.camera_paused and self.cap.isOpened():
+        image = None
+        if self.capture_preview_active and self.capture_preview_pil is not None:
+            image = self.capture_preview_pil
+        elif not self.camera_paused and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
                 if hasattr(self, 'flip_h_var') and self.flip_h_var.get():
                     frame = cv2.flip(frame, 1)
                 if hasattr(self, 'flip_v_var') and self.flip_v_var.get():
                     frame = cv2.flip(frame, 0)
-                # OpenCVのBGRからRGBに変換
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                # PILイメージに変換
                 image = Image.fromarray(frame)
-                # Tkinter用に変換
-                photo = ImageTk.PhotoImage(image=image)
-                self.camera_label.configure(image=photo)
-                self.camera_label.image = photo
 
-                # 別ウィンドウプレビューがあれば更新
-                if self.preview_label is not None:
-                    tw = max(1, int(self.preview_target_width))
-                    th = max(1, int(self.preview_target_height))
-                    iw, ih = image.size
-                    ratio = min(tw / iw, th / ih)
-                    nw, nh = max(1, int(iw * ratio)), max(1, int(ih * ratio))
-                    resized = image.resize((nw, nh))
-                    background = Image.new('RGB', (tw, th), 'black')
-                    x = (tw - nw) // 2
-                    y = (th - nh) // 2
-                    background.paste(resized, (x, y))
-                    preview_photo = ImageTk.PhotoImage(image=background)
-                    self.preview_label.configure(image=preview_photo)
-                    self.preview_label.image = preview_photo
+        if image is not None:
+            photo = ImageTk.PhotoImage(image=image)
+            self.camera_label.configure(image=photo)
+            self.camera_label.image = photo
+
+            if self.preview_label is not None:
+                tw = max(1, int(self.preview_target_width))
+                th = max(1, int(self.preview_target_height))
+                iw, ih = image.size
+                ratio = min(tw / iw, th / ih)
+                nw, nh = max(1, int(iw * ratio)), max(1, int(ih * ratio))
+                resized = image.resize((nw, nh))
+                background = Image.new('RGB', (tw, th), 'black')
+                x = (tw - nw) // 2
+                y = (th - nh) // 2
+                background.paste(resized, (x, y))
+                preview_photo = ImageTk.PhotoImage(image=background)
+                self.preview_label.configure(image=preview_photo)
+                self.preview_label.image = preview_photo
         
         # 30ms後に再度更新
         self.root.after(30, self.update_camera)
@@ -509,6 +514,10 @@ class PortraitApp:
         if self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
+                if hasattr(self, 'flip_h_var') and self.flip_h_var.get():
+                    frame = cv2.flip(frame, 1)
+                if hasattr(self, 'flip_v_var') and self.flip_v_var.get():
+                    frame = cv2.flip(frame, 0)
                 # 画像を保存
                 os.makedirs('Images/in', exist_ok=True)
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -557,6 +566,8 @@ class PortraitApp:
     def show_capture_preview(self, image_path):
         """撮影・選択画像のプレビュー確認ウィンドウ"""
         try:
+            # 撮影画像でプレビュー固定
+            self.begin_capture_preview_freeze(image_path)
             preview = tk.Toplevel(self.root)
             preview.title("プレビュー確認")
             img = Image.open(image_path)
@@ -572,6 +583,7 @@ class PortraitApp:
 
             def on_accept():
                 if self.enqueue_image(image_path):
+                    self.end_capture_preview_freeze()
                     preview.destroy()
             def on_reject():
                 try:
@@ -579,14 +591,34 @@ class PortraitApp:
                 except Exception:
                     pass
                 self.status_label.configure(text="破棄しました")
+                self.end_capture_preview_freeze()
+                preview.destroy()
+
+            def on_close():
+                self.end_capture_preview_freeze()
                 preview.destroy()
 
             ok_btn = ttk.Button(btn_frame, text="この画像で生成", command=on_accept)
             cancel_btn = ttk.Button(btn_frame, text="破棄", command=on_reject)
             ok_btn.grid(row=0, column=0, padx=6)
             cancel_btn.grid(row=0, column=1, padx=6)
+            preview.protocol("WM_DELETE_WINDOW", on_close)
         except Exception as e:
             self.status_label.configure(text=f"プレビュー表示エラー: {e}")
+
+    def begin_capture_preview_freeze(self, image_path):
+        try:
+            img = Image.open(image_path)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            self.capture_preview_pil = img
+            self.capture_preview_active = True
+        except Exception as e:
+            print(f"固定プレビュー開始エラー: {e}")
+
+    def end_capture_preview_freeze(self):
+        self.capture_preview_active = False
+        self.capture_preview_pil = None
 
     def toggle_preview_window(self):
         """別ウィンドウのライブプレビュー表示/非表示"""
