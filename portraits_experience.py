@@ -1,11 +1,13 @@
 import cv2
-import mediapipe as mp
 import os
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
-import math
 from tkinter import colorchooser
+import numpy as np
+from collections import deque
+import numpy as np
+from collections import deque
 try:
     import serial
 except Exception:
@@ -29,7 +31,7 @@ class PortraitExperience:
         self.REAL_FACE_WIDTH = 16.0  # 顔の実際の幅（cm）
         self.FOCAL_LENGTH = 800.0    # カメラの焦点距離（px）
         self.DIST_MAX = 100.0  # この距離で動画の最初
-        self.DIST_MIN = 60.0  # この距離で動画の最後
+        self.DIST_MIN = 30.0  # この距離で動画の最後
         
         # デバッグモード
         self.debug_mode = False
@@ -45,13 +47,14 @@ class PortraitExperience:
         # 顔認識状態
         self.face_detected = False
         self.last_face_time = 0.0
+        self.KNOWN_DISTANCE = 30.0
+        self.KNOWN_FACE_WIDTH = 14.0
+        self.focal_length = None
+        self.smooth_buffer = deque(maxlen=10)
+        self.dnn_net = None
         
-        # MediaPipeのセットアップ
-        self.mp_face_detection = mp.solutions.face_detection
-        self.face_detection = self.mp_face_detection.FaceDetection(
-            model_selection=0, 
-            min_detection_confidence=0.3
-        )
+        # DNN 初期化
+        self._init_dnn_net()
         
         # カメラの設定（固定カメラID使用）
         self.portrait_camera_id = 1  # ポートレート体験用カメラID（デフォルト1）
@@ -270,14 +273,19 @@ class PortraitExperience:
         
         # 動画選択コンボボックス（上に配置）
         self.video_var = tk.StringVar()
-        self.video_combo = ttk.Combobox(main_frame, textvariable=self.video_var)
+        self.video_combo = ttk.Combobox(main_frame, textvariable=self.video_var, width=40)
         self.video_combo['values'] = self.get_video_list()
         self.video_combo.grid(row=2, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         self.video_combo.bind('<<ComboboxSelected>>', self.on_video_selected)
         
-        # 表示関連（ディスプレイ/フルスクリーン/背景）
-        display_frame = ttk.Frame(main_frame)
-        display_frame.grid(row=3, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        # 表示関連はタブへ移動して潰れ防止
+        tabs_view = ttk.Notebook(main_frame)
+        tabs_view.grid(row=3, column=0, padx=0, pady=5, sticky=(tk.W, tk.E))
+        tab_display = ttk.Frame(tabs_view)
+        tabs_view.add(tab_display, text="表示")
+
+        display_frame = ttk.Frame(tab_display)
+        display_frame.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         ttk.Label(display_frame, text="ディスプレイ:").grid(row=0, column=0, padx=(0, 5))
         self.display_var = tk.StringVar()
         self.display_combo = ttk.Combobox(display_frame, textvariable=self.display_var, state="readonly", width=25)
@@ -286,22 +294,25 @@ class PortraitExperience:
         self.display_combo.current(0)
         self.display_combo.grid(row=0, column=1)
         self.display_combo.bind('<<ComboboxSelected>>', self.on_display_selected)
-        self.fullscreen_btn = ttk.Button(display_frame, text="フルスクリーン切り替え", command=self.toggle_fullscreen)
-        self.fullscreen_btn.grid(row=0, column=2, padx=8)
-        self.bgcolor_btn = ttk.Button(display_frame, text="背景色を選択", command=self.choose_bg_color)
-        self.bgcolor_btn.grid(row=0, column=3, padx=4)
-        ttk.Label(display_frame, text="幅(px):").grid(row=0, column=4, padx=(10, 4))
+        self.fullscreen_btn = ttk.Button(display_frame, text="フルスクリーン", command=self.toggle_fullscreen)
+        self.fullscreen_btn.grid(row=0, column=2, padx=4, sticky=tk.W)
+        self.bgcolor_btn = ttk.Button(display_frame, text="背景色", command=self.choose_bg_color)
+        self.bgcolor_btn.grid(row=0, column=3, padx=4, sticky=tk.W)
+
+        size_row2 = ttk.Frame(tab_display)
+        size_row2.grid(row=1, column=0, padx=5, pady=(0,5), sticky=(tk.W, tk.E))
+        ttk.Label(size_row2, text="幅(px):").grid(row=0, column=0, padx=(0,4))
         self.win_width_var = tk.StringVar(value="820")
-        self.win_width_entry = ttk.Entry(display_frame, textvariable=self.win_width_var, width=7)
-        self.win_width_entry.grid(row=0, column=5)
-        ttk.Label(display_frame, text="×").grid(row=0, column=6, padx=2)
+        self.win_width_entry = ttk.Entry(size_row2, textvariable=self.win_width_var, width=7)
+        self.win_width_entry.grid(row=0, column=1)
+        ttk.Label(size_row2, text="×").grid(row=0, column=2, padx=2)
         self.win_height_var = tk.StringVar(value="820")
-        self.win_height_entry = ttk.Entry(display_frame, textvariable=self.win_height_var, width=7)
-        self.win_height_entry.grid(row=0, column=7)
-        self.apply_size_btn = ttk.Button(display_frame, text="適用", command=self.apply_window_size)
-        self.apply_size_btn.grid(row=0, column=8, padx=4)
-        self.fit_display_btn = ttk.Button(display_frame, text="ディスプレイ解像度に設定", command=self.set_to_display_resolution)
-        self.fit_display_btn.grid(row=0, column=9, padx=4)
+        self.win_height_entry = ttk.Entry(size_row2, textvariable=self.win_height_var, width=7)
+        self.win_height_entry.grid(row=0, column=3)
+        self.apply_size_btn = ttk.Button(size_row2, text="適用", command=self.apply_window_size)
+        self.apply_size_btn.grid(row=0, column=4, padx=4)
+        self.fit_display_btn = ttk.Button(size_row2, text="ディスプレイ解像度に設定", command=self.set_to_display_resolution)
+        self.fit_display_btn.grid(row=0, column=5, padx=4)
         
         # タブで詳細設定を整理
         tabs = ttk.Notebook(main_frame)
@@ -346,6 +357,12 @@ class PortraitExperience:
         camera_status = "接続OK" if self.cap_cam.isOpened() else "接続エラー"
         self.camera_status_label = ttk.Label(camera_frame, text=f"カメラ{self.portrait_camera_id}: {camera_status}")
         self.camera_status_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
+
+        # 反転設定（体験側カメラ）
+        self.flip_cam_h_var = tk.BooleanVar()
+        self.flip_cam_v_var = tk.BooleanVar()
+        ttk.Checkbutton(camera_frame, text="左右反転", variable=self.flip_cam_h_var).grid(row=3, column=0, padx=5, pady=2, sticky=tk.W)
+        ttk.Checkbutton(camera_frame, text="上下反転", variable=self.flip_cam_v_var).grid(row=3, column=1, padx=5, pady=2, sticky=tk.W)
         
         # デバッグ（タブ内）
         self.debug_var = tk.BooleanVar()
@@ -481,54 +498,57 @@ class PortraitExperience:
         if self.cap_cam.isOpened():
             ret, frame = self.cap_cam.read()
             if ret:
-                # 顔検出用にRGB変換
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = self.face_detection.process(frame_rgb)
-                
+                # 反転処理（先に反映）
+                if hasattr(self, 'flip_cam_h_var') and self.flip_cam_h_var.get():
+                    frame = cv2.flip(frame, 1)
+                if hasattr(self, 'flip_cam_v_var') and self.flip_cam_v_var.get():
+                    frame = cv2.flip(frame, 0)
+
                 # 顔認識状態をリセット
                 self.face_detected = False
-                
-                # デバッグモードでない場合のみ顔検出を実行
-                if not self.debug_mode:
-                    if results.detections:
-                        self.face_detected = True
-                        self.last_face_time = time.time()
-                        
-                        for detection in results.detections:
-                            bboxC = detection.location_data.relative_bounding_box
-                            ih, iw, _ = frame.shape
-                            face_width_pixel = bboxC.width * iw
-                            
-                            if face_width_pixel > 0:
-                                # Arduino使用時は顔認識中のみArduino距離を使用、それ以外は顔サイズから計算
-                                if self.use_arduino and self.arduino_distance > 0:
-                                    distance_cm = self.arduino_distance
-                                    self.distance_label.configure(text=f"Arduino距離: {distance_cm:.2f} cm")
-                                else:
-                                    distance_cm = (self.REAL_FACE_WIDTH * self.FOCAL_LENGTH) / face_width_pixel
-                                    self.distance_label.configure(text=f"推定距離: {distance_cm:.2f} cm")
-                                
-                                # 動画の再生位置を距離に応じて決定
-                                clamped_distance = max(min(distance_cm, self.DIST_MAX), self.DIST_MIN)
-                                normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
-                                self.current_frame = int(normalized * (self.total_frames - 1))
-                    
-                    # 顔認識状態の更新
-                    if self.face_detected:
-                        self.face_status_label.configure(text="顔認識: 検出中")
+
+                # DNN による顔検出と距離推定
+                try:
+                    if self.dnn_net is not None and not self.debug_mode:
+                        (h, w) = frame.shape[:2]
+                        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
+                        self.dnn_net.setInput(blob)
+                        detections = self.dnn_net.forward()
+                        for i in range(0, detections.shape[2]):
+                            confidence = float(detections[0, 0, i, 2])
+                            if confidence > 0.6:
+                                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                                (x1, y1, x2, y2) = box.astype("int")
+                                face_width_px = max(1, x2 - x1)
+                                if self.focal_length is None:
+                                    self.focal_length = (face_width_px * self.KNOWN_DISTANCE) / self.KNOWN_FACE_WIDTH
+                                if self.focal_length:
+                                    distance_cm = (self.KNOWN_FACE_WIDTH * self.focal_length) / face_width_px
+                                    self.smooth_buffer.append(distance_cm)
+                                    smooth_distance = float(np.mean(self.smooth_buffer))
+                                    self.distance_label.configure(text=f"推定距離: {smooth_distance:.2f} cm")
+                                    # 動画の再生位置を距離に応じて決定
+                                    clamped_distance = max(min(smooth_distance, self.DIST_MAX), self.DIST_MIN)
+                                    normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
+                                    self.current_frame = int(normalized * (self.total_frames - 1))
+                                self.face_detected = True
+                                break
                     else:
-                        self.face_status_label.configure(text="顔認識: 未検出")
+                        # デバッグモードの場合は手動距離を使用
+                        distance_cm = self.manual_distance
+                        self.distance_label.configure(text=f"手動距離: {distance_cm:.2f} cm")
+                        self.face_detected = True
+                        clamped_distance = max(min(distance_cm, self.DIST_MAX), self.DIST_MIN)
+                        normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
+                        self.current_frame = int(normalized * (self.total_frames - 1))
+                except Exception:
+                    pass
+
+                # 顔認識状態の更新
+                if self.face_detected:
+                    self.face_status_label.configure(text="顔認識: 検出中")
                 else:
-                    # デバッグモードの場合は手動距離を使用
-                    distance_cm = self.manual_distance
-                    self.distance_label.configure(text=f"手動距離: {distance_cm:.2f} cm")
-                    self.face_detected = True  # デバッグモードでは常に顔ありとして扱う
-                    
-                    # 動画の再生位置を手動距離に応じて決定
-                    clamped_distance = max(min(distance_cm, self.DIST_MAX), self.DIST_MIN)
-                    normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
-                    self.current_frame = int(normalized * (self.total_frames - 1))
-                
+                    self.face_status_label.configure(text="顔認識: 未検出")
                 # カメラ映像を表示
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 # カメラ映像のサイズを調整（コントロールウィンドウに適合）
@@ -551,6 +571,12 @@ class PortraitExperience:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
             ret, video_frame = self.cap.read()
             if ret:
+                # 表示映像の反転（オプション）
+                # 必要に応じて動画側にも反転を適用したければ以下を有効化
+                # if hasattr(self, 'flip_video_h_var') and self.flip_video_h_var.get():
+                #     video_frame = cv2.flip(video_frame, 1)
+                # if hasattr(self, 'flip_video_v_var') and self.flip_video_v_var.get():
+                #     video_frame = cv2.flip(video_frame, 0)
                 # フルスクリーンかどうかでサイズを調整
                 if self.is_fullscreen:
                     # フルスクリーンの場合は選択ディスプレイサイズに合わせつつアスペクト比を保持
@@ -745,6 +771,19 @@ class PortraitExperience:
         self.win_width_var.set(str(display["width"]))
         self.win_height_var.set(str(display["height"]))
         self.apply_window_size()
+
+    def _init_dnn_net(self):
+        try:
+            modelFile = "res10_300x300_ssd_iter_140000.caffemodel"
+            configFile = "deploy.prototxt"
+            if os.path.exists(modelFile) and os.path.exists(configFile):
+                self.dnn_net = cv2.dnn.readNetFromCaffe(configFile, modelFile)
+            else:
+                self.dnn_net = None
+                print("DNNモデルが見つかりません。deploy.prototxt / res10_300x300_ssd_iter_140000.caffemodel を配置してください。")
+        except Exception as e:
+            self.dnn_net = None
+            print(f"DNN初期化エラー: {e}")
     
     def toggle_debug_mode(self):
         """デバッグモードの切り替え"""

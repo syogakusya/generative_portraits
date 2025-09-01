@@ -354,6 +354,14 @@ class PortraitApp:
         # カメラテストボタン
         self.test_camera_btn = ttk.Button(camera_frame, text="テスト", command=self.test_gui_camera)
         self.test_camera_btn.grid(row=0, column=2, padx=2)
+
+        # 反転設定
+        self.flip_h_var = tk.BooleanVar()
+        self.flip_v_var = tk.BooleanVar()
+        self.flip_h_check = ttk.Checkbutton(camera_frame, text="左右反転", variable=self.flip_h_var)
+        self.flip_v_check = ttk.Checkbutton(camera_frame, text="上下反転", variable=self.flip_v_var)
+        self.flip_h_check.grid(row=0, column=3, padx=4)
+        self.flip_v_check.grid(row=0, column=4, padx=4)
         
         # カメラ状態表示
         self.gui_camera_status = ttk.Label(camera_frame, text="カメラ0: 接続中")
@@ -461,6 +469,10 @@ class PortraitApp:
         if not self.camera_paused and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
+                if hasattr(self, 'flip_h_var') and self.flip_h_var.get():
+                    frame = cv2.flip(frame, 1)
+                if hasattr(self, 'flip_v_var') and self.flip_v_var.get():
+                    frame = cv2.flip(frame, 0)
                 # OpenCVのBGRからRGBに変換
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 # PILイメージに変換
