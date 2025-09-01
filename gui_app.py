@@ -37,6 +37,12 @@ class PortraitApp:
         
         # PortraitExperienceのインスタンス参照
         self.experience_instances = []
+
+        # 別ウィンドウプレビュー用（先に初期化）
+        self.preview_window = None
+        self.preview_label = None
+        self.preview_target_width = 800
+        self.preview_target_height = 600
         
         # モデルを初期化時にはロードしない（遅延ロード）
         self.model = None
@@ -56,6 +62,17 @@ class PortraitApp:
         
         # 画像処理スレッドの開始
         self.start_processing_thread()
+
+        
+
+        # 起動時にPortrait Experienceを背景のみで自動起動
+        try:
+            experience_window = tk.Toplevel(self.root)
+            from portraits_experience import PortraitExperience
+            experience_instance = PortraitExperience(experience_window, None, self.on_experience_closed)
+            self.experience_instances.append(experience_instance)
+        except Exception as e:
+            print(f"Portrait Experience自動起動に失敗: {e}")
     
     def load_existing_videos(self):
         """既存の動画ファイルを読み込む"""
@@ -238,6 +255,10 @@ class PortraitApp:
         # 撮影ボタン
         self.capture_btn = ttk.Button(button_frame, text="撮影", command=self.capture_image)
         self.capture_btn.grid(row=0, column=0, padx=2)
+
+        # 別ウィンドウプレビューボタン
+        self.preview_btn = ttk.Button(button_frame, text="別ウィンドウプレビュー", command=self.toggle_preview_window)
+        self.preview_btn.grid(row=0, column=3, padx=2)
         
         # 画像選択ボタン
         self.select_image_btn = ttk.Button(button_frame, text="画像を選択", command=self.select_image)
@@ -448,6 +469,22 @@ class PortraitApp:
                 photo = ImageTk.PhotoImage(image=image)
                 self.camera_label.configure(image=photo)
                 self.camera_label.image = photo
+
+                # 別ウィンドウプレビューがあれば更新
+                if self.preview_label is not None:
+                    tw = max(1, int(self.preview_target_width))
+                    th = max(1, int(self.preview_target_height))
+                    iw, ih = image.size
+                    ratio = min(tw / iw, th / ih)
+                    nw, nh = max(1, int(iw * ratio)), max(1, int(ih * ratio))
+                    resized = image.resize((nw, nh))
+                    background = Image.new('RGB', (tw, th), 'black')
+                    x = (tw - nw) // 2
+                    y = (th - nh) // 2
+                    background.paste(resized, (x, y))
+                    preview_photo = ImageTk.PhotoImage(image=background)
+                    self.preview_label.configure(image=preview_photo)
+                    self.preview_label.image = preview_photo
         
         # 30ms後に再度更新
         self.root.after(30, self.update_camera)
@@ -460,26 +497,13 @@ class PortraitApp:
         if self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
-                # キューが満杯かチェック
-                if self.image_queue.full():
-                    self.status_label.configure(text="処理待ちが満杯です。しばらくお待ちください (最大10件)")
-                    return
-                
                 # 画像を保存
                 os.makedirs('Images/in', exist_ok=True)
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 image_path = f'Images/in/captured_{timestamp}.jpg'
                 cv2.imwrite(image_path, frame)
-                
-                # 画像をキューに追加
-                self.image_queue.put(image_path)
-                
-                # キューの状態を表示
-                queue_size = self.image_queue.qsize()
-                if self.processing:
-                    self.status_label.configure(text=f"画像を追加しました (キュー: {queue_size}/10件, 処理中)")
-                else:
-                    self.status_label.configure(text=f"画像を追加しました (キュー: {queue_size}/10件)")
+                # プレビュー確認
+                self.show_capture_preview(image_path)
     
     def select_image(self):
         """既存の画像ファイルを選択して処理"""
@@ -492,11 +516,6 @@ class PortraitApp:
         )
         
         if file_path:
-            # キューが満杯かチェック
-            if self.image_queue.full():
-                self.status_label.configure(text="処理待ちが満杯です。しばらくお待ちください (最大10件)")
-                return
-            
             # 選択された画像をImagesフォルダにコピー
             os.makedirs('Images/in', exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -507,16 +526,82 @@ class PortraitApp:
             # 画像をコピー
             image = cv2.imread(file_path)
             cv2.imwrite(new_path, image)
-            
-            # 画像をキューに追加
-            self.image_queue.put(new_path)
-            
-            # キューの状態を表示
-            queue_size = self.image_queue.qsize()
-            if self.processing:
-                self.status_label.configure(text=f"画像を追加しました: {filename} (キュー: {queue_size}/10件, 処理中)")
-            else:
-                self.status_label.configure(text=f"画像を追加しました: {filename} (キュー: {queue_size}/10件)")
+            # プレビュー確認
+            self.show_capture_preview(new_path)
+
+    def enqueue_image(self, image_path):
+        """確認後にキューへ追加"""
+        if self.image_queue.full():
+            self.status_label.configure(text="処理待ちが満杯です。しばらくお待ちください (最大10件)")
+            return False
+        self.image_queue.put(image_path)
+        queue_size = self.image_queue.qsize()
+        if self.processing:
+            self.status_label.configure(text=f"キューに追加しました (キュー: {queue_size}/10件, 処理中)")
+        else:
+            self.status_label.configure(text=f"キューに追加しました (キュー: {queue_size}/10件)")
+        return True
+
+    def show_capture_preview(self, image_path):
+        """撮影・選択画像のプレビュー確認ウィンドウ"""
+        try:
+            preview = tk.Toplevel(self.root)
+            preview.title("プレビュー確認")
+            img = Image.open(image_path)
+            # 表示サイズ調整
+            img.thumbnail((900, 700))
+            photo = ImageTk.PhotoImage(image=img)
+            label = tk.Label(preview, image=photo)
+            label.image = photo
+            label.pack(padx=10, pady=10)
+
+            btn_frame = ttk.Frame(preview)
+            btn_frame.pack(pady=10)
+
+            def on_accept():
+                if self.enqueue_image(image_path):
+                    preview.destroy()
+            def on_reject():
+                try:
+                    os.remove(image_path)
+                except Exception:
+                    pass
+                self.status_label.configure(text="破棄しました")
+                preview.destroy()
+
+            ok_btn = ttk.Button(btn_frame, text="この画像で生成", command=on_accept)
+            cancel_btn = ttk.Button(btn_frame, text="破棄", command=on_reject)
+            ok_btn.grid(row=0, column=0, padx=6)
+            cancel_btn.grid(row=0, column=1, padx=6)
+        except Exception as e:
+            self.status_label.configure(text=f"プレビュー表示エラー: {e}")
+
+    def toggle_preview_window(self):
+        """別ウィンドウのライブプレビュー表示/非表示"""
+        if self.preview_window is None or not self.preview_window.winfo_exists():
+            self.preview_window = tk.Toplevel(self.root)
+            self.preview_window.title("ライブプレビュー")
+            self.preview_label = tk.Label(self.preview_window, bg='black')
+            self.preview_label.pack(fill='both', expand=True)
+            def _on_label_configure(event):
+                self.preview_target_width = event.width
+                self.preview_target_height = event.height
+            self.preview_label.bind('<Configure>', _on_label_configure)
+            def on_close():
+                try:
+                    self.preview_window.destroy()
+                except:
+                    pass
+                self.preview_label = None
+                self.preview_window = None
+            self.preview_window.protocol("WM_DELETE_WINDOW", on_close)
+        else:
+            try:
+                self.preview_window.destroy()
+            except:
+                pass
+            self.preview_label = None
+            self.preview_window = None
     
     def start_processing_thread(self):
         self.processing_thread = threading.Thread(target=self.process_images, daemon=True)
@@ -686,16 +771,24 @@ class PortraitApp:
         if selected_indices:
             file_type, file_path = self.generated_files[selected_indices[0]]
             
-            # 動画ファイルのみ体験可能
             if file_type == "動画":
-                # カメラを一時的に解放してPortrait Experienceでの競合を避ける
-                self.pause_camera()
-                
-                # 新しいウィンドウで体験を開始
-                experience_window = tk.Toplevel(self.root)
-                from portraits_experience import PortraitExperience
-                experience_instance = PortraitExperience(experience_window, file_path, self.on_experience_closed)
-                self.experience_instances.append(experience_instance)
+                # すでに開いているPortraitExperienceに動画をセット
+                if self.experience_instances:
+                    try:
+                        self.experience_instances[0].set_video(file_path)
+                        self.status_label.configure(text="既存のPortrait Experienceに動画をセットしました")
+                    except Exception as e:
+                        self.status_label.configure(text=f"動画セット時エラー: {e}")
+                else:
+                    # 開いていなければ新規起動（カメラは停止しない）
+                    try:
+                        experience_window = tk.Toplevel(self.root)
+                        from portraits_experience import PortraitExperience
+                        experience_instance = PortraitExperience(experience_window, file_path, self.on_experience_closed)
+                        self.experience_instances.append(experience_instance)
+                        self.status_label.configure(text="Portrait Experienceを起動しました")
+                    except Exception as e:
+                        self.status_label.configure(text=f"起動エラー: {e}")
             elif file_type == "画像フレーム":
                 self.status_label.configure(text="体験機能は動画ファイルのみに対応しています。画像フレームは「ファイルを開く」で確認できます")
             elif file_type == "論文用画像":

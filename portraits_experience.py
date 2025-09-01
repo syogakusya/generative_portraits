@@ -6,7 +6,10 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import math
 from tkinter import colorchooser
-import serial
+try:
+    import serial
+except Exception:
+    serial = None
 import threading
 import time
 
@@ -19,6 +22,8 @@ class PortraitExperience:
         self.root = root
         self.root.title("ポートレート体験 - コントロール")
         self.on_close_callback = on_close_callback
+        self._dpi_aware = False
+        self._set_dpi_awareness()
         
         # 設定
         self.REAL_FACE_WIDTH = 16.0  # 顔の実際の幅（cm）
@@ -64,13 +69,15 @@ class PortraitExperience:
         self.video_window.title("ポートレート動画")
         self.video_window.configure(bg='black')  # 動画ウィンドウの背景を黒に設定
         self.is_fullscreen = False
+        self.video_target_width = 800
+        self.video_target_height = 800
         
         # ディスプレイ情報を取得
         self.detect_displays()
-        self.selected_display = 0  # デフォルトはメインディスプレイ
+        self.selected_display = 1  # デフォルトはセカンドディスプレイ
         
-        # ウィンドウの初期配置
-        self.root.geometry("400x750+200+200")  # メインウィンドウ：幅400、高さ750、位置(200,200)
+        # ウィンドウの初期配置（縦幅を抑制）
+        self.root.geometry("420x650+200+200")  # メインウィンドウ：幅420、高さ650、位置(200,200)
         self.video_window.geometry("820x820+550+200")  # 動画ウィンドウ：幅820、高さ820、位置(550,200)
         
         # 背景色の初期値を設定（create_widgetsの前に定義）
@@ -85,6 +92,16 @@ class PortraitExperience:
         
         # カメラプレビューの更新
         self.update_camera()
+
+        # セカンドディスプレイがある場合は自動で選択してフルスクリーン
+        if hasattr(self, 'displays') and isinstance(self.displays, list) and len(self.displays) >= 2:
+            self.selected_display = 1
+            try:
+                self.display_combo.current(1)
+            except Exception:
+                pass
+            # ウィンドウ移動後にフルスクリーン化
+            self.video_window.after(200, self.toggle_fullscreen)
     
     def find_available_camera(self):
         """利用可能なカメラを検出（GUI appで使用中のカメラを避ける）"""
@@ -104,32 +121,135 @@ class PortraitExperience:
         return cv2.VideoCapture(0)
     
     def detect_displays(self):
-        """利用可能なディスプレイを検出"""
-        # メインディスプレイの情報を取得
-        main_width = self.root.winfo_screenwidth()
-        main_height = self.root.winfo_screenheight()
-        
-        # 仮想デスクトップの全体サイズを取得
-        virtual_width = self.root.winfo_vrootwidth()
-        virtual_height = self.root.winfo_vrootheight()
-        
-        # 簡易的な2ディスプレイ検出
-        # 横に並んでいる場合
-        if virtual_width > main_width:
+        """利用可能なディスプレイを検出（Windows: 正確な座標、その他: フォールバック）"""
+        self.displays = []
+        try:
+            if os.name == 'nt':
+                import ctypes
+                from ctypes import wintypes
+
+                user32 = ctypes.windll.user32
+                try:
+                    shcore = ctypes.windll.shcore
+                except Exception:
+                    shcore = None
+
+                MonitorEnumProc = ctypes.WINFUNCTYPE(
+                    ctypes.c_int,
+                    wintypes.HMONITOR,
+                    wintypes.HDC,
+                    ctypes.POINTER(wintypes.RECT),
+                    wintypes.LPARAM,
+                )
+
+                class MONITORINFO(ctypes.Structure):
+                    _fields_ = [
+                        ("cbSize", wintypes.DWORD),
+                        ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD),
+                    ]
+
+                MONITORINFOF_PRIMARY = 1
+                monitors = []
+
+                def _callback(hMonitor, hdcMonitor, lprcMonitor, dwData):
+                    mi = MONITORINFO()
+                    mi.cbSize = ctypes.sizeof(MONITORINFO)
+                    user32.GetMonitorInfoW(hMonitor, ctypes.byref(mi))
+                    rect = mi.rcMonitor
+                    is_primary = bool(mi.dwFlags & MONITORINFOF_PRIMARY)
+                    scale = 1.0
+                    if shcore is not None:
+                        try:
+                            MDT_EFFECTIVE_DPI = 0
+                            dpiX = ctypes.c_uint(96)
+                            dpiY = ctypes.c_uint(96)
+                            shcore.GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, ctypes.byref(dpiX), ctypes.byref(dpiY))
+                            scale = max(0.5, min(4.0, dpiX.value / 96.0))
+                        except Exception:
+                            pass
+                    monitors.append({
+                        "name": "プライマリ" if is_primary else f"ディスプレイ{len(monitors)+1}",
+                        "x": rect.left,
+                        "y": rect.top,
+                        "width": rect.right - rect.left,
+                        "height": rect.bottom - rect.top,
+                        "primary": is_primary,
+                        "scale": scale,
+                    })
+                    return 1
+
+                user32.EnumDisplayMonitors(0, 0, MonitorEnumProc(_callback), 0)
+
+                # プライマリを先頭、その後はx,yで安定ソート
+                monitors.sort(key=lambda m: (not m["primary"], m["x"], m["y"]))
+                # 表示名を整える
+                named = []
+                for i, m in enumerate(monitors):
+                    name = "メインディスプレイ" if m["primary"] else f"セカンドディスプレイ" if len(named) == 1 else f"ディスプレイ{i+1}"
+                    named.append({
+                        "name": name,
+                        "x": m["x"],
+                        "y": m["y"],
+                        "width": m["width"],
+                        "height": m["height"],
+                        "primary": m["primary"],
+                        "scale": m.get("scale", 1.0),
+                    })
+                self.displays = named if named else self.displays
+
+        except Exception:
+            pass
+
+        if not self.displays:
+            # フォールバック（簡易検出）
+            main_width = self.root.winfo_screenwidth()
+            main_height = self.root.winfo_screenheight()
             self.displays = [
-                {"name": "メインディスプレイ", "x": 0, "y": 0, "width": main_width, "height": main_height},
-                {"name": "セカンドディスプレイ", "x": main_width, "y": 0, "width": virtual_width - main_width, "height": main_height}
+                {"name": "メインディスプレイ", "x": 0, "y": 0, "width": main_width, "height": main_height, "primary": True, "scale": 1.0}
             ]
-        # 縦に並んでいる場合
-        elif virtual_height > main_height:
-            self.displays = [
-                {"name": "メインディスプレイ", "x": 0, "y": 0, "width": main_width, "height": main_height},
-                {"name": "セカンドディスプレイ", "x": 0, "y": main_height, "width": main_width, "height": virtual_height - main_height}
-            ]
-        else:
-            self.displays = [
-                {"name": "メインディスプレイ", "x": 0, "y": 0, "width": main_width, "height": main_height}
-            ]
+
+    def _set_dpi_awareness(self):
+        if os.name != 'nt':
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            # Try Per Monitor v2
+            try:
+                SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
+                SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+                AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+                if SetProcessDpiAwarenessContext(AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2):
+                    self._dpi_aware = True
+                    return
+            except Exception:
+                pass
+            # Fallback: SetProcessDpiAwareness(2)
+            try:
+                shcore = ctypes.windll.shcore
+                res = shcore.SetProcessDpiAwareness(2)
+                if res == 0:
+                    self._dpi_aware = True
+                    return
+            except Exception:
+                pass
+            # Legacy
+            try:
+                if user32.SetProcessDPIAware():
+                    self._dpi_aware = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _to_logical_geometry(self, width, height, x, y, display):
+        scale = float(display.get("scale", 1.0))
+        if self._dpi_aware:
+            return int(width), int(height), int(x), int(y)
+        return int(round(width / scale)), int(round(height / scale)), int(round(x / scale)), int(round(y / scale))
         
     def create_widgets(self):
         # メインウィンドウのUI
@@ -140,17 +260,62 @@ class PortraitExperience:
         self.camera_label = ttk.Label(main_frame)
         self.camera_label.grid(row=0, column=0, padx=5, pady=5)
         
-        # 距離表示ラベル
-        self.distance_label = ttk.Label(main_frame, text="推定距離: -- cm")
-        self.distance_label.grid(row=1, column=0, padx=5, pady=5)
+        # ステータス（距離・顔認識）
+        status_inline = ttk.Frame(main_frame)
+        status_inline.grid(row=1, column=0, padx=5, pady=2, sticky=(tk.W, tk.E))
+        self.distance_label = ttk.Label(status_inline, text="推定距離: -- cm")
+        self.distance_label.grid(row=0, column=0, padx=(0, 10))
+        self.face_status_label = ttk.Label(status_inline, text="顔認識: 未検出")
+        self.face_status_label.grid(row=0, column=1)
         
-        # 顔認識状態表示ラベル
-        self.face_status_label = ttk.Label(main_frame, text="顔認識: 未検出")
-        self.face_status_label.grid(row=2, column=0, padx=5, pady=5)
+        # 動画選択コンボボックス（上に配置）
+        self.video_var = tk.StringVar()
+        self.video_combo = ttk.Combobox(main_frame, textvariable=self.video_var)
+        self.video_combo['values'] = self.get_video_list()
+        self.video_combo.grid(row=2, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        self.video_combo.bind('<<ComboboxSelected>>', self.on_video_selected)
         
-        # カメラ設定フレーム
-        camera_frame = ttk.LabelFrame(main_frame, text="カメラ設定", padding="5")
-        camera_frame.grid(row=3, column=0, padx=5, pady=10, sticky=(tk.W, tk.E))
+        # 表示関連（ディスプレイ/フルスクリーン/背景）
+        display_frame = ttk.Frame(main_frame)
+        display_frame.grid(row=3, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Label(display_frame, text="ディスプレイ:").grid(row=0, column=0, padx=(0, 5))
+        self.display_var = tk.StringVar()
+        self.display_combo = ttk.Combobox(display_frame, textvariable=self.display_var, state="readonly", width=25)
+        display_names = [d["name"] for d in self.displays]
+        self.display_combo['values'] = display_names
+        self.display_combo.current(0)
+        self.display_combo.grid(row=0, column=1)
+        self.display_combo.bind('<<ComboboxSelected>>', self.on_display_selected)
+        self.fullscreen_btn = ttk.Button(display_frame, text="フルスクリーン切り替え", command=self.toggle_fullscreen)
+        self.fullscreen_btn.grid(row=0, column=2, padx=8)
+        self.bgcolor_btn = ttk.Button(display_frame, text="背景色を選択", command=self.choose_bg_color)
+        self.bgcolor_btn.grid(row=0, column=3, padx=4)
+        ttk.Label(display_frame, text="幅(px):").grid(row=0, column=4, padx=(10, 4))
+        self.win_width_var = tk.StringVar(value="820")
+        self.win_width_entry = ttk.Entry(display_frame, textvariable=self.win_width_var, width=7)
+        self.win_width_entry.grid(row=0, column=5)
+        ttk.Label(display_frame, text="×").grid(row=0, column=6, padx=2)
+        self.win_height_var = tk.StringVar(value="820")
+        self.win_height_entry = ttk.Entry(display_frame, textvariable=self.win_height_var, width=7)
+        self.win_height_entry.grid(row=0, column=7)
+        self.apply_size_btn = ttk.Button(display_frame, text="適用", command=self.apply_window_size)
+        self.apply_size_btn.grid(row=0, column=8, padx=4)
+        self.fit_display_btn = ttk.Button(display_frame, text="ディスプレイ解像度に設定", command=self.set_to_display_resolution)
+        self.fit_display_btn.grid(row=0, column=9, padx=4)
+        
+        # タブで詳細設定を整理
+        tabs = ttk.Notebook(main_frame)
+        tabs.grid(row=4, column=0, padx=0, pady=5, sticky=(tk.W, tk.E))
+        tab_camera = ttk.Frame(tabs)
+        tab_arduino = ttk.Frame(tabs)
+        tab_debug = ttk.Frame(tabs)
+        tabs.add(tab_camera, text="カメラ")
+        tabs.add(tab_arduino, text="Arduino")
+        tabs.add(tab_debug, text="デバッグ")
+        
+        # カメラ設定フレーム（タブ内）
+        camera_frame = ttk.LabelFrame(tab_camera, text="カメラ設定", padding="5")
+        camera_frame.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         
         # カメラ選択モード
         self.camera_mode_var = tk.StringVar(value="固定")
@@ -182,29 +347,27 @@ class PortraitExperience:
         self.camera_status_label = ttk.Label(camera_frame, text=f"カメラ{self.portrait_camera_id}: {camera_status}")
         self.camera_status_label.grid(row=2, column=0, columnspan=3, padx=5, pady=2)
         
-        # デバッグモード切り替えチェックボックス
+        # デバッグ（タブ内）
         self.debug_var = tk.BooleanVar()
-        self.debug_checkbox = ttk.Checkbutton(main_frame, text="デバッグモード", 
+        self.debug_checkbox = ttk.Checkbutton(tab_debug, text="デバッグモード", 
                                              variable=self.debug_var, 
                                              command=self.toggle_debug_mode)
-        self.debug_checkbox.grid(row=4, column=0, padx=5, pady=5)
+        self.debug_checkbox.grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
         
-        # 距離調整スライダー（デバッグモード用）
         self.distance_var = tk.DoubleVar(value=100.0)
-        self.distance_slider = ttk.Scale(main_frame, from_=self.DIST_MIN, to=self.DIST_MAX,
+        self.distance_slider = ttk.Scale(tab_debug, from_=self.DIST_MIN, to=self.DIST_MAX,
                                        variable=self.distance_var, orient=tk.HORIZONTAL,
                                        command=self.on_distance_changed)
-        self.distance_slider.grid(row=5, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
-        self.distance_slider.grid_remove()  # 初期状態では非表示
+        self.distance_slider.grid(row=1, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        self.distance_slider.grid_remove()
         
-        # スライダー値表示ラベル
-        self.slider_label = ttk.Label(main_frame, text="手動距離: 100.0 cm")
-        self.slider_label.grid(row=6, column=0, padx=5, pady=5)
-        self.slider_label.grid_remove()  # 初期状態では非表示
+        self.slider_label = ttk.Label(tab_debug, text="手動距離: 100.0 cm")
+        self.slider_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.slider_label.grid_remove()
         
-        # Arduino設定フレーム
-        arduino_frame = ttk.LabelFrame(main_frame, text="Arduino設定", padding="5")
-        arduino_frame.grid(row=8, column=0, padx=5, pady=10, sticky=(tk.W, tk.E))
+        # Arduino設定フレーム（タブ内）
+        arduino_frame = ttk.LabelFrame(tab_arduino, text="Arduino設定", padding="5")
+        arduino_frame.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
         
         # Arduino使用チェックボックス
         self.arduino_var = tk.BooleanVar()
@@ -223,41 +386,13 @@ class PortraitExperience:
         self.arduino_distance_label = ttk.Label(arduino_frame, text="Arduino距離: -- cm")
         self.arduino_distance_label.grid(row=2, column=0, columnspan=2, padx=5, pady=5)
         
-        # 動画選択コンボボックス
-        self.video_var = tk.StringVar()
-        self.video_combo = ttk.Combobox(main_frame, textvariable=self.video_var)
-        self.video_combo['values'] = self.get_video_list()
-        self.video_combo.grid(row=9, column=0, padx=5, pady=5)
-        self.video_combo.bind('<<ComboboxSelected>>', self.on_video_selected)
-        
-        # フルスクリーン切り替えボタン
-        self.fullscreen_btn = ttk.Button(main_frame, text="フルスクリーン切り替え", command=self.toggle_fullscreen)
-        self.fullscreen_btn.grid(row=10, column=0, padx=5, pady=5)
-        
-        # ディスプレイ選択コンボボックス
-        display_frame = ttk.Frame(main_frame)
-        display_frame.grid(row=11, column=0, padx=5, pady=5, sticky=(tk.W, tk.E))
-        
-        ttk.Label(display_frame, text="ディスプレイ:").grid(row=0, column=0, padx=(0, 5))
-        self.display_var = tk.StringVar()
-        self.display_combo = ttk.Combobox(display_frame, textvariable=self.display_var, state="readonly", width=25)
-        display_names = [d["name"] for d in self.displays]
-        self.display_combo['values'] = display_names
-        self.display_combo.current(0)  # デフォルトでメインディスプレイを選択
-        self.display_combo.grid(row=0, column=1)
-        self.display_combo.bind('<<ComboboxSelected>>', self.on_display_selected)
-        
-        # 背景色選択ボタン
-        self.bgcolor_btn = ttk.Button(main_frame, text="背景色を選択", command=self.choose_bg_color)
-        self.bgcolor_btn.grid(row=12, column=0, padx=5, pady=5)
-        
         # キャリブレーションボタン
         self.calibrate_btn = ttk.Button(main_frame, text="カメラキャリブレーション", command=self.open_calibration_window)
-        self.calibrate_btn.grid(row=13, column=0, padx=5, pady=5)
+        self.calibrate_btn.grid(row=5, column=0, padx=5, pady=5)
         
         # 終了ボタン
         self.quit_btn = ttk.Button(main_frame, text="終了", command=self.quit)
-        self.quit_btn.grid(row=14, column=0, padx=5, pady=5)
+        self.quit_btn.grid(row=6, column=0, padx=5, pady=5)
         
         # 動画ウィンドウのUI
         self.video_frame = tk.Frame(self.video_window, bg=self.bg_color, padx=10, pady=10)
@@ -269,7 +404,11 @@ class PortraitExperience:
 
         # 動画プレビュー
         self.video_label = tk.Label(self.video_frame, bg=self.bg_color)
-        self.video_label.grid(row=0, column=0, padx=5, pady=5)
+        self.video_label.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
+        def _on_video_label_configure(event):
+            self.video_target_width = max(1, event.width)
+            self.video_target_height = max(1, event.height)
+        self.video_label.bind('<Configure>', _on_video_label_configure)
         
         # 動画ウィンドウのキーバインド
         self.video_window.bind('<KeyPress-Escape>', self.exit_fullscreen)
@@ -305,6 +444,30 @@ class PortraitExperience:
             self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
             self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self.current_frame = 0
+
+    def set_video(self, path):
+        """GUI側から動画パスを設定し、再生準備を行う"""
+        try:
+            if not path:
+                return
+            self.video_path = path
+            try:
+                self.cap.release()
+            except:
+                pass
+            self.cap = cv2.VideoCapture(self.video_path)
+            self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.current_frame = 0
+            # コンボボックス表示も同期
+            try:
+                base = os.path.basename(path)
+                if base in self.get_video_list():
+                    self.video_var.set(base)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"動画設定エラー: {e}")
     
     def update_camera(self):
         # カメラが正常に動作しているかチェック
@@ -390,9 +553,10 @@ class PortraitExperience:
             if ret:
                 # フルスクリーンかどうかでサイズを調整
                 if self.is_fullscreen:
-                    # フルスクリーンの場合は画面サイズに合わせつつアスペクト比を保持
-                    screen_width = self.video_window.winfo_screenwidth()
-                    screen_height = self.video_window.winfo_screenheight()
+                    # フルスクリーンの場合は選択ディスプレイサイズに合わせつつアスペクト比を保持
+                    display = self.displays[self.selected_display]
+                    screen_width = display["width"]
+                    screen_height = display["height"]
                     
                     # 元の動画のアスペクト比を計算
                     h, w = video_frame.shape[:2]
@@ -414,30 +578,47 @@ class PortraitExperience:
                     video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
                     video_image = Image.fromarray(video_frame)
                     
-                    screen_width = self.video_window.winfo_screenwidth()
-                    screen_height = self.video_window.winfo_screenheight()
+                    display = self.displays[self.selected_display]
+                    screen_width = display["width"]
+                    screen_height = display["height"]
                     background = Image.new('RGB', (screen_width, screen_height), self.bg_color)
                     x = (screen_width - video_image.width) // 2
                     y = (screen_height - video_image.height) // 2
                     background.paste(video_image, (x, y))
                     video_photo = ImageTk.PhotoImage(image=background)
                 else:
-                    # 通常表示の場合
-                    video_frame = cv2.resize(video_frame, (800, 800))
+                    # 通常表示：video_labelのサイズにフィット
+                    tw = max(1, int(self.video_target_width))
+                    th = max(1, int(self.video_target_height))
+                    h, w = video_frame.shape[:2]
+                    aspect_ratio = w / h
+                    target_ratio = tw / th if th != 0 else aspect_ratio
+                    if target_ratio > aspect_ratio:
+                        new_height = th
+                        new_width = int(th * aspect_ratio)
+                    else:
+                        new_width = tw
+                        new_height = int(tw / aspect_ratio)
+                    video_frame = cv2.resize(video_frame, (new_width, new_height))
                     video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
                     video_image = Image.fromarray(video_frame)
-                    video_photo = ImageTk.PhotoImage(image=video_image)
+                    background = Image.new('RGB', (tw, th), self.bg_color)
+                    x = (tw - video_image.width) // 2
+                    y = (th - video_image.height) // 2
+                    background.paste(video_image, (x, y))
+                    video_photo = ImageTk.PhotoImage(image=background)
                 
                 self.video_label.configure(image=video_photo)
                 self.video_label.image = video_photo
         else:
             # 顔が検出されていない場合は背景色のみ表示
             if self.is_fullscreen:
-                screen_width = self.video_window.winfo_screenwidth()
-                screen_height = self.video_window.winfo_screenheight()
-                background = Image.new('RGB', (screen_width, screen_height), self.bg_color)
+                display = self.displays[self.selected_display]
+                background = Image.new('RGB', (display["width"], display["height"]), self.bg_color)
             else:
-                background = Image.new('RGB', (800, 800), self.bg_color)
+                tw = max(1, int(self.video_target_width))
+                th = max(1, int(self.video_target_height))
+                background = Image.new('RGB', (tw, th), self.bg_color)
             
             video_photo = ImageTk.PhotoImage(image=background)
             self.video_label.configure(image=video_photo)
@@ -495,50 +676,75 @@ class PortraitExperience:
         if not self.is_fullscreen:
             display = self.displays[self.selected_display]
             # ウィンドウを選択したディスプレイの中央に配置
-            window_width = 820
-            window_height = 820
+            window_width, window_height = self._get_desired_window_size()
             x = display["x"] + (display["width"] - window_width) // 2
             y = display["y"] + (display["height"] - window_height) // 2
-            self.video_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+            w, h, x, y = self._to_logical_geometry(window_width, window_height, x, y, display)
+            self.video_window.geometry(f"{w}x{h}+{x}+{y}")
     
     def toggle_fullscreen(self):
         """フルスクリーンの切り替え"""
         self.is_fullscreen = not self.is_fullscreen
         
         if self.is_fullscreen:
-            # 選択されたディスプレイの情報を取得
             display = self.displays[self.selected_display]
-            
-            # ウィンドウを選択したディスプレイに移動
-            self.video_window.geometry(f"+{display['x']}+{display['y']}")
-            
-            # 少し待ってからフルスクリーンにする（ウィンドウの移動を確実にするため）
-            self.video_window.after(100, lambda: self.video_window.attributes('-fullscreen', True))
+            self.video_window.overrideredirect(True)
+            w, h, x, y = self._to_logical_geometry(display['width'], display['height'], display['x'], display['y'], display)
+            self.video_window.geometry(f"{w}x{h}+{x}+{y}")
+            self.video_window.lift()
+            self.video_window.focus_force()
             self.fullscreen_btn.configure(text="フルスクリーン終了")
         else:
-            self.video_window.attributes('-fullscreen', False)
-            # 元のサイズに戻す
+            self.video_window.overrideredirect(False)
             display = self.displays[self.selected_display]
-            window_width = 820
-            window_height = 820
+            window_width, window_height = self._get_desired_window_size()
             x = display["x"] + (display["width"] - window_width) // 2
             y = display["y"] + (display["height"] - window_height) // 2
-            self.video_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+            w, h, x, y = self._to_logical_geometry(window_width, window_height, x, y, display)
+            self.video_window.geometry(f"{w}x{h}+{x}+{y}")
             self.fullscreen_btn.configure(text="フルスクリーン切り替え")
     
     def exit_fullscreen(self, event=None):
         """フルスクリーンを終了"""
         if self.is_fullscreen:
             self.is_fullscreen = False
-            self.video_window.attributes('-fullscreen', False)
-            # 元のサイズに戻す
+            self.video_window.overrideredirect(False)
             display = self.displays[self.selected_display]
-            window_width = 820
-            window_height = 820
+            window_width, window_height = self._get_desired_window_size()
             x = display["x"] + (display["width"] - window_width) // 2
             y = display["y"] + (display["height"] - window_height) // 2
-            self.video_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+            w, h, x, y = self._to_logical_geometry(window_width, window_height, x, y, display)
+            self.video_window.geometry(f"{w}x{h}+{x}+{y}")
             self.fullscreen_btn.configure(text="フルスクリーン切り替え")
+
+    def _get_desired_window_size(self):
+        try:
+            w = int(self.win_width_var.get())
+        except Exception:
+            w = 820
+        try:
+            h = int(self.win_height_var.get())
+        except Exception:
+            h = 820
+        w = max(200, min(10000, w))
+        h = max(200, min(10000, h))
+        return w, h
+
+    def apply_window_size(self):
+        if self.is_fullscreen:
+            return
+        display = self.displays[self.selected_display]
+        window_width, window_height = self._get_desired_window_size()
+        x = display["x"] + (display["width"] - window_width) // 2
+        y = display["y"] + (display["height"] - window_height) // 2
+        w, h, x, y = self._to_logical_geometry(window_width, window_height, x, y, display)
+        self.video_window.geometry(f"{w}x{h}+{x}+{y}")
+
+    def set_to_display_resolution(self):
+        display = self.displays[self.selected_display]
+        self.win_width_var.set(str(display["width"]))
+        self.win_height_var.set(str(display["height"]))
+        self.apply_window_size()
     
     def toggle_debug_mode(self):
         """デバッグモードの切り替え"""
@@ -646,6 +852,11 @@ class PortraitExperience:
     
     def connect_arduino(self):
         """Arduinoとの接続を開始"""
+        if serial is None:
+            print("pyserial が見つかりません。Arduino接続を無効化します。")
+            self.arduino_var.set(False)
+            self.use_arduino = False
+            return
         try:
             com_port = self.com_var.get()
             self.arduino_serial = serial.Serial(com_port, 9600, timeout=1)
