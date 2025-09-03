@@ -43,10 +43,27 @@ class PortraitApp:
         self.preview_label = None
         self.preview_target_width = 800
         self.preview_target_height = 600
+        self.preview_max_width = 4096
+        self.preview_max_height = 2160
+        self.preview_last_render_ms = 0
+        self._camera_photo = None
+        self._camera_photo_size = None
+        self._preview_photo = None
+        self._preview_photo_size = None
+
+        # ディスプレイ検出（プレビュー全画面用）
+        self._dpi_aware = False
+        self._set_dpi_awareness()
+        self.displays = []
+        self.detect_displays()
+        self.preview_display_index = 1 if len(self.displays) >= 2 else 0
 
         # 撮影プレビュー固定表示制御
         self.capture_preview_active = False
         self.capture_preview_pil = None
+
+        # 別ウィンドウプレビュー全画面制御
+        self.preview_fullscreen = False
         
         # モデルを初期化時にはロードしない（遅延ロード）
         self.model = None
@@ -263,6 +280,10 @@ class PortraitApp:
         # 別ウィンドウプレビューボタン
         self.preview_btn = ttk.Button(button_frame, text="別ウィンドウプレビュー", command=self.toggle_preview_window)
         self.preview_btn.grid(row=0, column=3, padx=2)
+
+        # プレビュー全画面ボタン
+        self.preview_full_btn = ttk.Button(button_frame, text="プレビュー全画面", command=self.toggle_preview_fullscreen)
+        self.preview_full_btn.grid(row=0, column=4, padx=2)
         
         # 画像選択ボタン
         self.select_image_btn = ttk.Button(button_frame, text="画像を選択", command=self.select_image)
@@ -366,6 +387,19 @@ class PortraitApp:
         self.flip_v_check = ttk.Checkbutton(camera_frame, text="上下反転", variable=self.flip_v_var)
         self.flip_h_check.grid(row=0, column=3, padx=4)
         self.flip_v_check.grid(row=0, column=4, padx=4)
+
+        # プレビューディスプレイ選択（崩れ防止のためサブフレームで2列配置）
+        preview_frame = ttk.Frame(camera_frame)
+        preview_frame.grid(row=2, column=0, columnspan=5, sticky=(tk.W, tk.E), pady=(4,0))
+        ttk.Label(preview_frame, text="プレビューディスプレイ:").grid(row=0, column=0, padx=(0,4), sticky=tk.W)
+        self.preview_display_var = tk.StringVar()
+        display_names = [d.get('name', f"ディスプレイ{i+1}") for i, d in enumerate(self.displays)]
+        self.preview_display_combo = ttk.Combobox(preview_frame, textvariable=self.preview_display_var,
+                                                 values=display_names, state="readonly", width=22)
+        if display_names:
+            self.preview_display_combo.current(self.preview_display_index)
+        self.preview_display_combo.grid(row=0, column=1, padx=(0,8), sticky=tk.W)
+        self.preview_display_combo.bind('<<ComboboxSelected>>', self.on_preview_display_selected)
         
         # カメラ状態表示
         self.gui_camera_status = ttk.Label(camera_frame, text="カメラ0: 接続中")
@@ -484,27 +518,70 @@ class PortraitApp:
                 image = Image.fromarray(frame)
 
         if image is not None:
-            photo = ImageTk.PhotoImage(image=image)
-            self.camera_label.configure(image=photo)
-            self.camera_label.image = photo
+            iw, ih = image.size
+            if self._camera_photo is None or self._camera_photo_size != (iw, ih):
+                self._camera_photo = ImageTk.PhotoImage(image=image)
+                self._camera_photo_size = (iw, ih)
+                self.camera_label.configure(image=self._camera_photo)
+                self.camera_label.image = self._camera_photo
+            else:
+                try:
+                    self._camera_photo.paste(image)
+                except Exception:
+                    self._camera_photo = ImageTk.PhotoImage(image=image)
+                    self._camera_photo_size = (iw, ih)
+                    self.camera_label.configure(image=self._camera_photo)
+                    self.camera_label.image = self._camera_photo
 
             if self.preview_label is not None:
-                tw = max(1, int(self.preview_target_width))
-                th = max(1, int(self.preview_target_height))
-                iw, ih = image.size
-                ratio = min(tw / iw, th / ih)
-                nw, nh = max(1, int(iw * ratio)), max(1, int(ih * ratio))
-                resized = image.resize((nw, nh))
-                background = Image.new('RGB', (tw, th), 'black')
-                x = (tw - nw) // 2
-                y = (th - nh) // 2
-                background.paste(resized, (x, y))
-                preview_photo = ImageTk.PhotoImage(image=background)
-                self.preview_label.configure(image=preview_photo)
-                self.preview_label.image = preview_photo
+                now_ms = int(time.time() * 1000)
+                both_fs = False
+                if self.preview_fullscreen and self.experience_instances:
+                    try:
+                        for inst in self.experience_instances:
+                            if getattr(inst, 'is_fullscreen', False):
+                                both_fs = True
+                                break
+                    except Exception:
+                        both_fs = False
+                refresh_interval = 33
+                if self.preview_fullscreen and self.displays:
+                    refresh_interval = 67
+                if both_fs:
+                    refresh_interval = 133
+                source_image = image
+                should_render = (now_ms - self.preview_last_render_ms >= refresh_interval)
+                if should_render and source_image is not None:
+                    if self.preview_fullscreen and self.displays:
+                        display = self.displays[self.preview_display_index]
+                        tw, th = display['width'], display['height']
+                        tw = min(tw, self.preview_max_width)
+                        th = min(th, self.preview_max_height)
+                    else:
+                        tw, th = 800, 600
+                    iw, ih = source_image.size
+                    ratio = min(tw / iw, th / ih)
+                    nw, nh = max(1, int(iw * ratio)), max(1, int(ih * ratio))
+                    resample = Image.NEAREST if (nw * nh) > (iw * ih) else Image.BILINEAR
+                    resized = source_image.resize((nw, nh), resample)
+                    pw, ph = resized.size
+                    if self._preview_photo is None or self._preview_photo_size != (pw, ph):
+                        self._preview_photo = ImageTk.PhotoImage(image=resized)
+                        self._preview_photo_size = (pw, ph)
+                        self.preview_label.configure(image=self._preview_photo, bg='black')
+                        self.preview_label.image = self._preview_photo
+                    else:
+                        try:
+                            self._preview_photo.paste(resized)
+                        except Exception:
+                            self._preview_photo = ImageTk.PhotoImage(image=resized)
+                            self._preview_photo_size = (pw, ph)
+                            self.preview_label.configure(image=self._preview_photo, bg='black')
+                            self.preview_label.image = self._preview_photo
+                    self.preview_last_render_ms = now_ms
         
-        # 30ms後に再度更新
-        self.root.after(30, self.update_camera)
+        # 33ms後に再度更新（約30fps）
+        self.root.after(33, self.update_camera)
     
     def capture_image(self):
         if self.camera_paused:
@@ -628,8 +705,8 @@ class PortraitApp:
             self.preview_label = tk.Label(self.preview_window, bg='black')
             self.preview_label.pack(fill='both', expand=True)
             def _on_label_configure(event):
-                self.preview_target_width = event.width
-                self.preview_target_height = event.height
+                # 非フルスクリーン時の動的拡大は行わない（固定サイズで描画）
+                pass
             self.preview_label.bind('<Configure>', _on_label_configure)
             def on_close():
                 try:
@@ -638,7 +715,13 @@ class PortraitApp:
                     pass
                 self.preview_label = None
                 self.preview_window = None
+                self.preview_fullscreen = False
+                self._preview_photo = None
+                self._preview_photo_size = None
             self.preview_window.protocol("WM_DELETE_WINDOW", on_close)
+            # 全画面トグル用キー
+            self.preview_window.bind('<KeyPress-Escape>', lambda e: self.exit_preview_fullscreen())
+            self.preview_window.bind('<KeyPress-F11>', lambda e: self.toggle_preview_fullscreen())
         else:
             try:
                 self.preview_window.destroy()
@@ -647,20 +730,147 @@ class PortraitApp:
             self.preview_label = None
             self.preview_window = None
     
+    def toggle_preview_fullscreen(self):
+        """別ウィンドウプレビューのフルスクリーン切り替え"""
+        # ウィンドウが無ければ作ってからフルスクリーン
+        if self.preview_window is None or not self.preview_window.winfo_exists():
+            self.toggle_preview_window()
+            if self.preview_window is None:
+                return
+            self.preview_window.after(100, self.toggle_preview_fullscreen)
+            return
+        self.preview_fullscreen = not self.preview_fullscreen
+        if self.preview_fullscreen:
+            if self.displays:
+                display = self.displays[self.preview_display_index]
+                self.preview_window.overrideredirect(True)
+                w, h, x, y = self._to_logical_geometry(display['width'], display['height'], display['x'], display['y'], display)
+                self.preview_window.geometry(f"{w}x{h}+{x}+{y}")
+                self.preview_window.lift()
+                self.preview_window.focus_force()
+        else:
+            self.preview_window.overrideredirect(False)
+            # 既定のサイズに戻す
+            if self.displays:
+                display = self.displays[self.preview_display_index]
+                w, h = 820, 620
+                x = display['x'] + (display['width'] - w) // 2
+                y = display['y'] + (display['height'] - h) // 2
+                w, h, x, y = self._to_logical_geometry(w, h, x, y, display)
+                self.preview_window.geometry(f"{w}x{h}+{x}+{y}")
+
+    def exit_preview_fullscreen(self):
+        if self.preview_window is not None and self.preview_window.winfo_exists():
+            self.preview_fullscreen = False
+            self.preview_window.overrideredirect(False)
+
+    def on_preview_display_selected(self, event):
+        self.preview_display_index = self.preview_display_combo.current()
+
+    def detect_displays(self):
+        self.displays = []
+        try:
+            if os.name == 'nt':
+                import ctypes
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                MonitorEnumProc = ctypes.WINFUNCTYPE(
+                    ctypes.c_int,
+                    wintypes.HMONITOR,
+                    wintypes.HDC,
+                    ctypes.POINTER(wintypes.RECT),
+                    wintypes.LPARAM,
+                )
+
+                class MONITORINFO(ctypes.Structure):
+                    _fields_ = [
+                        ("cbSize", wintypes.DWORD),
+                        ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD),
+                    ]
+
+                MONITORINFOF_PRIMARY = 1
+                monitors = []
+
+                def _callback(hMonitor, hdcMonitor, lprcMonitor, dwData):
+                    mi = MONITORINFO()
+                    mi.cbSize = ctypes.sizeof(MONITORINFO)
+                    user32.GetMonitorInfoW(hMonitor, ctypes.byref(mi))
+                    rect = mi.rcMonitor
+                    is_primary = bool(mi.dwFlags & MONITORINFOF_PRIMARY)
+                    monitors.append({
+                        'name': 'メインディスプレイ' if is_primary else f'Display{len(monitors)+1}',
+                        'x': rect.left,
+                        'y': rect.top,
+                        'width': rect.right - rect.left,
+                        'height': rect.bottom - rect.top,
+                        'primary': is_primary,
+                        'scale': 1.0,
+                    })
+                    return 1
+
+                user32.EnumDisplayMonitors(0, 0, MonitorEnumProc(_callback), 0)
+                monitors.sort(key=lambda m: (not m['primary'], m['x'], m['y']))
+                self.displays = monitors
+        except Exception:
+            pass
+        if not self.displays:
+            # フォールバック
+            w = self.root.winfo_screenwidth()
+            h = self.root.winfo_screenheight()
+            self.displays = [{'name': 'メインディスプレイ', 'x': 0, 'y': 0, 'width': w, 'height': h, 'primary': True, 'scale': 1.0}]
+
+    def _set_dpi_awareness(self):
+        if os.name != 'nt':
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            try:
+                SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
+                SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+                AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+                SetProcessDpiAwarenessContext(AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                self._dpi_aware = True
+                return
+            except Exception:
+                pass
+            try:
+                shcore = ctypes.windll.shcore
+                res = shcore.SetProcessDpiAwareness(2)
+                if res == 0:
+                    self._dpi_aware = True
+                    return
+            except Exception:
+                pass
+            try:
+                if user32.SetProcessDPIAware():
+                    self._dpi_aware = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _to_logical_geometry(self, width, height, x, y, display):
+        scale = float(display.get('scale', 1.0))
+        if self._dpi_aware:
+            return int(width), int(height), int(x), int(y)
+        return int(round(width / scale)), int(round(height / scale)), int(round(x / scale)), int(round(y / scale))
+
     def start_processing_thread(self):
         self.processing_thread = threading.Thread(target=self.process_images, daemon=True)
         self.processing_thread.start()
     
     def process_images(self):
         while True:
-            if not self.image_queue.empty():
-                # ロックを取得して同時処理を防ぐ
-                with self.processing_lock:
-                    image_path = self.image_queue.get()
-                    queue_remaining = self.image_queue.qsize()
-                    self.generate_video(image_path, queue_remaining)
-                    self.image_queue.task_done()
-            time.sleep(0.1)
+            image_path = self.image_queue.get()  # ブロッキングで待機（CPUを消費しない）
+            # ロックを取得して同時処理を防ぐ
+            with self.processing_lock:
+                queue_remaining = self.image_queue.qsize()
+                self.generate_video(image_path, queue_remaining)
+            self.image_queue.task_done()
     
     def generate_video(self, image_path, queue_remaining=0):
         self.processing = True

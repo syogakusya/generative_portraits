@@ -30,8 +30,8 @@ class PortraitExperience:
         # 設定
         self.REAL_FACE_WIDTH = 16.0  # 顔の実際の幅（cm）
         self.FOCAL_LENGTH = 800.0    # カメラの焦点距離（px）
-        self.DIST_MAX = 100.0  # この距離で動画の最初
-        self.DIST_MIN = 30.0  # この距離で動画の最後
+        self.DIST_MAX = 40.0  # この距離で動画の最初
+        self.DIST_MIN = 15.0  # この距離で動画の最後
         
         # デバッグモード
         self.debug_mode = False
@@ -66,6 +66,19 @@ class PortraitExperience:
         self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.current_frame = 0
+        self.last_shown_frame = -1
+        self.last_video_render_ms = 0
+        self.video_refresh_interval_ms = 67
+        self.max_fullscreen_width = 1920
+        self.max_fullscreen_height = 1080
+        self.dnn_step = 3
+        self._update_counter = 0
+        self._cam_photo = None
+        self._cam_photo_size = None
+        self._video_photo = None
+        self._video_photo_size = None
+        self._fs_last_check_ms = 0
+        self.latest_video_image = None
         
         # 動画ウィンドウの作成
         self.video_window = tk.Toplevel(self.root)
@@ -77,7 +90,7 @@ class PortraitExperience:
         
         # ディスプレイ情報を取得
         self.detect_displays()
-        self.selected_display = 1  # デフォルトはセカンドディスプレイ
+        self.selected_display = 2  # デフォルトはセカンドディスプレイ
         
         # ウィンドウの初期配置（縦幅を抑制）
         self.root.geometry("420x650+200+200")  # メインウィンドウ：幅420、高さ650、位置(200,200)
@@ -429,6 +442,10 @@ class PortraitExperience:
         # 動画プレビュー
         self.video_label = tk.Label(self.video_frame, bg=self.bg_color)
         self.video_label.grid(row=0, column=0, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
+        try:
+            self.video_label.configure(anchor='center')
+        except Exception:
+            pass
         def _on_video_frame_configure(event):
             # 親フレームの内側サイズから描画ターゲットを決める
             self.video_target_width = max(1, event.width - 10)
@@ -438,7 +455,10 @@ class PortraitExperience:
         # 動画ウィンドウのキーバインド
         self.video_window.bind('<KeyPress-Escape>', self.exit_fullscreen)
         self.video_window.bind('<KeyPress-F11>', lambda e: self.toggle_fullscreen())
-        self.video_window.focus_set()  # フォーカスを設定してキーイベントを受け取れるようにする
+        self.video_window.bind('<Configure>', self._on_video_window_configure)
+        self.video_window.bind('<FocusOut>', self._on_video_window_focus_out)
+        self.video_window.bind('<FocusIn>', self._on_video_window_focus_in)
+        self.video_window.focus_set()
     
     def get_video_list(self):
         video_dir = 'Images/out'
@@ -496,6 +516,7 @@ class PortraitExperience:
     
     def update_camera(self):
         # カメラが正常に動作しているかチェック
+        self._ensure_fullscreen(periodic=True)
         if not self.cap_cam.isOpened():
             self.camera_status_label.configure(text=f"カメラ{self.portrait_camera_id}: 接続エラー")
             self.face_status_label.configure(text="顔認識: カメラ未接続")
@@ -511,13 +532,11 @@ class PortraitExperience:
                     frame = cv2.flip(frame, 1)
                 if hasattr(self, 'flip_cam_v_var') and self.flip_cam_v_var.get():
                     frame = cv2.flip(frame, 0)
-
-                # 顔認識状態をリセット
-                self.face_detected = False
-
-                # DNN による顔検出と距離推定
+                self._update_counter = (self._update_counter + 1) % 1000000
                 try:
-                    if self.dnn_net is not None and not self.debug_mode:
+                    run_dnn = (self.dnn_net is not None and not self.debug_mode and (self._update_counter % self.dnn_step == 0))
+                    if run_dnn:
+                        self.face_detected = False
                         (h, w) = frame.shape[:2]
                         blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
                         self.dnn_net.setInput(blob)
@@ -535,14 +554,12 @@ class PortraitExperience:
                                     self.smooth_buffer.append(distance_cm)
                                     smooth_distance = float(np.mean(self.smooth_buffer))
                                     self.distance_label.configure(text=f"推定距離: {smooth_distance:.2f} cm")
-                                    # 動画の再生位置を距離に応じて決定
                                     clamped_distance = max(min(smooth_distance, self.DIST_MAX), self.DIST_MIN)
                                     normalized = (self.DIST_MAX - clamped_distance) / (self.DIST_MAX - self.DIST_MIN)
                                     self.current_frame = int(normalized * (self.total_frames - 1))
                                 self.face_detected = True
                                 break
-                    else:
-                        # デバッグモードの場合は手動距離を使用
+                    elif self.debug_mode:
                         distance_cm = self.manual_distance
                         self.distance_label.configure(text=f"手動距離: {distance_cm:.2f} cm")
                         self.face_detected = True
@@ -562,9 +579,20 @@ class PortraitExperience:
                 # カメラ映像のサイズを調整（コントロールウィンドウに適合）
                 frame = cv2.resize(frame, (350, 260))
                 image = Image.fromarray(frame)
-                photo = ImageTk.PhotoImage(image=image)
-                self.camera_label.configure(image=photo)
-                self.camera_label.image = photo
+                iw, ih = image.size
+                if self._cam_photo is None or self._cam_photo_size != (iw, ih):
+                    self._cam_photo = ImageTk.PhotoImage(image=image)
+                    self._cam_photo_size = (iw, ih)
+                    self.camera_label.configure(image=self._cam_photo)
+                    self.camera_label.image = self._cam_photo
+                else:
+                    try:
+                        self._cam_photo.paste(image)
+                    except Exception:
+                        self._cam_photo = ImageTk.PhotoImage(image=image)
+                        self._cam_photo_size = (iw, ih)
+                        self.camera_label.configure(image=self._cam_photo)
+                        self.camera_label.image = self._cam_photo
                 
                 # 動画表示の処理
                 self.update_video_display()
@@ -574,95 +602,93 @@ class PortraitExperience:
     
     def update_video_display(self):
         """動画表示の更新"""
-        # 顔が検出されている場合のみ動画を表示
-        if self.face_detected:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+        now_ms = int(time.time() * 1000)
+        effective_interval = self.video_refresh_interval_ms
+        if self.is_fullscreen:
+            effective_interval = max(effective_interval, 100)
+        if now_ms - self.last_video_render_ms < effective_interval:
+            return
+        target_frame = int(max(0, min(self.total_frames - 1, self.current_frame)))
+        ret = False
+        video_frame = None
+        if self.last_shown_frame < 0 or abs(target_frame - self.last_shown_frame) > 3:
+            try:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            except Exception:
+                pass
             ret, video_frame = self.cap.read()
             if ret:
-                # 表示映像の反転（オプション）
-                # 必要に応じて動画側にも反転を適用したければ以下を有効化
-                # if hasattr(self, 'flip_video_h_var') and self.flip_video_h_var.get():
-                #     video_frame = cv2.flip(video_frame, 1)
-                # if hasattr(self, 'flip_video_v_var') and self.flip_video_v_var.get():
-                #     video_frame = cv2.flip(video_frame, 0)
-                # フルスクリーンかどうかでサイズを調整
-                if self.is_fullscreen:
-                    # フルスクリーンの場合は選択ディスプレイサイズに合わせつつアスペクト比を保持
-                    display = self.displays[self.selected_display]
-                    screen_width = display["width"]
-                    screen_height = display["height"]
-                    
-                    # 元の動画のアスペクト比を計算
-                    h, w = video_frame.shape[:2]
-                    aspect_ratio = w / h
-                    
-                    # スクリーンのアスペクト比を計算
-                    screen_aspect_ratio = screen_width / screen_height
-                    
-                    if screen_aspect_ratio > aspect_ratio:
-                        # スクリーンの方が横長の場合、高さに合わせる
-                        new_height = screen_height
-                        new_width = int(screen_height * aspect_ratio)
-                    else:
-                        # スクリーンの方が縦長の場合、幅に合わせる
-                        new_width = screen_width
-                        new_height = int(screen_width / aspect_ratio)
-                    
-                    video_frame = cv2.resize(video_frame, (new_width, new_height))
-                    video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
-                    video_image = Image.fromarray(video_frame)
-                    
-                    display = self.displays[self.selected_display]
-                    screen_width = display["width"]
-                    screen_height = display["height"]
-                    background = Image.new('RGB', (screen_width, screen_height), self.bg_color)
-                    x = (screen_width - video_image.width) // 2
-                    y = (screen_height - video_image.height) // 2
-                    background.paste(video_image, (x, y))
-                    video_photo = ImageTk.PhotoImage(image=background)
-                else:
-                    # 通常表示：video_frame は video_frame内の固定領域にフィット
-                    tw = int(self.video_target_width)
-                    th = int(self.video_target_height)
-                    tw = max(1, tw)
-                    th = max(1, th)
-                    h, w = video_frame.shape[:2]
-                    aspect_ratio = w / h
-                    target_ratio = tw / th
-                    if target_ratio > aspect_ratio:
-                        new_height = th
-                        new_width = int(th * aspect_ratio)
-                    else:
-                        new_width = tw
-                        new_height = int(tw / aspect_ratio)
-                    # 正確な整数へ
-                    new_width = max(1, int(new_width))
-                    new_height = max(1, int(new_height))
-                    video_frame = cv2.resize(video_frame, (new_width, new_height))
-                    video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
-                    video_image = Image.fromarray(video_frame)
-                    bg_w, bg_h = tw, th
-                    background = Image.new('RGB', (bg_w, bg_h), self.bg_color)
-                    x = (bg_w - video_image.width) // 2
-                    y = (bg_h - video_image.height) // 2
-                    background.paste(video_image, (x, y))
-                    video_photo = ImageTk.PhotoImage(image=background)
-                
-                self.video_label.configure(image=video_photo)
-                self.video_label.image = video_photo
+                self.last_shown_frame = target_frame
+        else:
+            ret, video_frame = self.cap.read()
+            if ret:
+                self.last_shown_frame += 1
+            else:
+                try:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                except Exception:
+                    pass
+                ret, video_frame = self.cap.read()
+                if ret:
+                    self.last_shown_frame = target_frame
+        if ret:
+            # 表示映像の反転（オプション）
+            # 必要に応じて動画側にも反転を適用したければ以下を有効化
+            # if hasattr(self, 'flip_video_h_var') and self.flip_video_h_var.get():
+            #     video_frame = cv2.flip(video_frame, 1)
+            # if hasattr(self, 'flip_video_v_var') and self.flip_video_v_var.get():
+            #     video_frame = cv2.flip(video_frame, 0)
+            # フルスクリーンかどうかでサイズを調整
+            # リサイズ（フルスクリーン時は制限、通常時はvideo_frame内に収めるが背景合成は行わない）
+            display = self.displays[self.selected_display]
+            if self.is_fullscreen:
+                sw = display["width"]
+                sh = display["height"]
+                limit_w = min(sw, self.max_fullscreen_width)
+                limit_h = min(sh, self.max_fullscreen_height)
+            else:
+                limit_w = max(1, int(self.video_target_width))
+                limit_h = max(1, int(self.video_target_height))
+            h, w = video_frame.shape[:2]
+            aspect_ratio = w / h
+            if limit_w / limit_h > aspect_ratio:
+                new_height = limit_h
+                new_width = int(limit_h * aspect_ratio)
+            else:
+                new_width = limit_w
+                new_height = int(limit_w / aspect_ratio)
+            new_width = max(1, int(new_width))
+            new_height = max(1, int(new_height))
+            video_frame = cv2.resize(video_frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
+            video_image = Image.fromarray(video_frame)
+            rw, rh = video_image.size
+            if self._video_photo is None or self._video_photo_size != (rw, rh):
+                self._video_photo = ImageTk.PhotoImage(image=video_image)
+                self._video_photo_size = (rw, rh)
+                self.video_label.configure(image=self._video_photo)
+                self.video_label.image = self._video_photo
+            else:
+                try:
+                    self._video_photo.paste(video_image)
+                except Exception:
+                    self._video_photo = ImageTk.PhotoImage(image=video_image)
+                    self._video_photo_size = (rw, rh)
+                    self.video_label.configure(image=self._video_photo)
+                    self.video_label.image = self._video_photo
+            self.latest_video_image = video_image
+            self.last_video_render_ms = now_ms
         else:
             # 顔が検出されていない場合は背景色のみ表示
-            if self.is_fullscreen:
-                display = self.displays[self.selected_display]
-                background = Image.new('RGB', (display["width"], display["height"]), self.bg_color)
-            else:
-                tw = max(1, int(self.video_target_width))
-                th = max(1, int(self.video_target_height))
-                background = Image.new('RGB', (tw, th), self.bg_color)
-            
-            video_photo = ImageTk.PhotoImage(image=background)
-            self.video_label.configure(image=video_photo)
-            self.video_label.image = video_photo
+            # 背景のみの描画は重い合成を避け、画像を消してラベル背景色のみ表示
+            try:
+                self.video_label.configure(image='')
+                self._video_photo = None
+                self._video_photo_size = None
+            except Exception:
+                pass
+            self.latest_video_image = None
+            self.last_video_render_ms = now_ms
     
     def quit(self):
         # Arduino接続を終了
@@ -730,9 +756,12 @@ class PortraitExperience:
             display = self.displays[self.selected_display]
             self.video_window.overrideredirect(True)
             w, h, x, y = self._to_logical_geometry(display['width'], display['height'], display['x'], display['y'], display)
-            self.video_window.geometry(f"{w}x{h}+{x}+{y}")
-            self.video_window.lift()
-            self.video_window.focus_force()
+            try:
+                self.video_window.geometry(f"{w}x{h}+{x}+{y}")
+                self.video_window.lift()
+                self.video_window.focus_force()
+            except Exception:
+                pass
             self.fullscreen_btn.configure(text="フルスクリーン終了")
         else:
             self.video_window.overrideredirect(False)
@@ -741,8 +770,41 @@ class PortraitExperience:
             x = display["x"] + (display["width"] - window_width) // 2
             y = display["y"] + (display["height"] - window_height) // 2
             w, h, x, y = self._to_logical_geometry(window_width, window_height, x, y, display)
-            self.video_window.geometry(f"{w}x{h}+{x}+{y}")
+            try:
+                self.video_window.geometry(f"{w}x{h}+{x}+{y}")
+            except Exception:
+                pass
             self.fullscreen_btn.configure(text="フルスクリーン切り替え")
+
+    def _ensure_fullscreen(self, periodic=False):
+        if not self.is_fullscreen:
+            return
+        try:
+            # overrideredirectで貼り付く挙動を維持
+            if not bool(self.video_window.overrideredirect()):
+                self.video_window.overrideredirect(True)
+        except Exception:
+            pass
+        if periodic:
+            try:
+                now_ms = int(time.time() * 1000)
+                if now_ms - self._fs_last_check_ms >= 250:
+                    try:
+                        self.video_window.lift()
+                    except Exception:
+                        pass
+                    self._fs_last_check_ms = now_ms
+            except Exception:
+                pass
+
+    def _on_video_window_configure(self, event):
+        self._ensure_fullscreen(periodic=False)
+
+    def _on_video_window_focus_out(self, event):
+        self._ensure_fullscreen(periodic=False)
+
+    def _on_video_window_focus_in(self, event):
+        self._ensure_fullscreen(periodic=False)
     
     def exit_fullscreen(self, event=None):
         """フルスクリーンを終了"""
@@ -754,7 +816,10 @@ class PortraitExperience:
             x = display["x"] + (display["width"] - window_width) // 2
             y = display["y"] + (display["height"] - window_height) // 2
             w, h, x, y = self._to_logical_geometry(window_width, window_height, x, y, display)
-            self.video_window.geometry(f"{w}x{h}+{x}+{y}")
+            try:
+                self.video_window.geometry(f"{w}x{h}+{x}+{y}")
+            except Exception:
+                pass
             self.fullscreen_btn.configure(text="フルスクリーン切り替え")
 
     def _get_desired_window_size(self):

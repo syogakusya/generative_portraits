@@ -1,6 +1,13 @@
 # 注意
 このリポジトリのプログラムはCUDAに対応しているOSが必要なため、macOSでは動作しません。
 
+# プログラム実行手順
+## generative_portraits内で以下を実行してください
+```bash
+.\venv\Scripts\activate
+
+python .\gui_app.py
+```
 # クローン後のセットアップ手順（venv推奨）
 
 このリポジトリをクローンした直後に行うべきセットアップ手順をまとめます。
@@ -44,3 +51,6 @@ python download_models.py
 - 新しいターミナルを開くたびに、venv環境を有効化する必要があります。
 - 依存パッケージは`requirements.txt`に記載されています。
 - PyTorchのバージョンやCUDAバージョンはご自身の環境に合わせて調整してください。 
+
+---
+
